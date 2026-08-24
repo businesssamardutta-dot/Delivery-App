@@ -1,0 +1,6 @@
+{
+  "name": "Haribansho Delivery Boy App",
+  "description": "Dedicated mobile application for Haribansho delivery personnel connected to Supabase backend.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
