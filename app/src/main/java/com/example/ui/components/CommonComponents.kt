@@ -17,6 +17,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -34,8 +35,12 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.asAndroidPath
 import androidx.compose.ui.graphics.asComposePath
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -626,20 +631,19 @@ fun DeliveryTimeline(currentStatus: String, modifier: Modifier = Modifier) {
     }
 }
 
-@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun SignatureCanvas(
     onSignatureCaptured: (Bitmap) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val path = remember { AndroidPath() }
+    val path = remember { Path() }
     var pathVersion by remember { mutableIntStateOf(0) }
     var hasSigned by remember { mutableStateOf(false) }
 
     Card(
-        colors = CardDefaults.cardColors(containerColor = DarkSurface),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
         shape = RoundedCornerShape(16.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
+        border = androidx.compose.foundation.BorderStroke(1.dp, LightBorder),
         modifier = modifier.fillMaxWidth()
     ) {
         Column(
@@ -677,52 +681,57 @@ fun SignatureCanvas(
                     .fillMaxWidth()
                     .height(140.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(Color(0xFF020617))
-                    .border(1.dp, if (hasSigned) EmeraldPrimary else DarkBorder, RoundedCornerShape(12.dp))
-                    .pointerInteropFilter { motionEvent ->
-                        when (motionEvent.action) {
-                            MotionEvent.ACTION_DOWN -> {
-                                path.moveTo(motionEvent.x, motionEvent.y)
+                    .background(Color.White)
+                    .border(1.5.dp, if (hasSigned) EmeraldPrimary else Color(0xFF0F172A), RoundedCornerShape(12.dp))
+                    .pointerInput(Unit) {
+                        detectDragGestures(
+                            onDragStart = { offset ->
+                                path.moveTo(offset.x, offset.y)
                                 hasSigned = true
                                 pathVersion++
-                                true
-                            }
-                            MotionEvent.ACTION_MOVE -> {
-                                path.lineTo(motionEvent.x, motionEvent.y)
+                            },
+                            onDrag = { change, _ ->
+                                change.consume()
+                                path.lineTo(change.position.x, change.position.y)
                                 pathVersion++
-                                true
-                            }
-                            MotionEvent.ACTION_UP -> {
+                            },
+                            onDragEnd = {
                                 pathVersion++
                                 val bmp = Bitmap.createBitmap(400, 140, Bitmap.Config.ARGB_8888)
                                 val canvas = AndroidCanvas(bmp)
+                                canvas.drawColor(android.graphics.Color.WHITE)
                                 val paint = Paint().apply {
-                                    color = android.graphics.Color.WHITE
-                                    strokeWidth = 5f
+                                    color = android.graphics.Color.BLACK
+                                    strokeWidth = 6f
                                     style = Paint.Style.STROKE
+                                    strokeCap = Paint.Cap.ROUND
+                                    strokeJoin = Paint.Join.ROUND
                                     isAntiAlias = true
                                 }
-                                canvas.drawPath(path, paint)
+                                canvas.drawPath(path.asAndroidPath(), paint)
                                 onSignatureCaptured(bmp)
-                                true
                             }
-                            else -> false
-                        }
+                        )
                     }
             ) {
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    val composePath = path.asComposePath()
-                    drawPath(
-                        path = composePath,
-                        color = EmeraldLight,
-                        style = Stroke(width = 4f)
-                    )
+                key(pathVersion) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        drawPath(
+                            path = path,
+                            color = Color.Black,
+                            style = Stroke(
+                                width = 5.dp.toPx(),
+                                cap = StrokeCap.Round,
+                                join = StrokeJoin.Round
+                            )
+                        )
+                    }
                 }
 
                 if (!hasSigned) {
                     Text(
                         text = "Customer sign here using finger",
-                        color = TextMuted,
+                        color = TextSecondary,
                         fontSize = 13.sp,
                         modifier = Modifier.align(Alignment.Center)
                     )

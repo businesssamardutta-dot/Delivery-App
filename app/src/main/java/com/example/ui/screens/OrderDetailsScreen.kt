@@ -484,9 +484,9 @@ fun OrderDetailsScreen(
 
                     // 3. Camera / Doorstep Photo Proof
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
                         shape = RoundedCornerShape(16.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, LightBorder),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
@@ -507,7 +507,7 @@ fun OrderDetailsScreen(
                                 Text(
                                     text = if (isPhotoAttached) "Doorstep Photo Attached ✓" else "Optional photo confirmation",
                                     style = MaterialTheme.typography.bodySmall.copy(
-                                        color = if (isPhotoAttached) EmeraldLight else TextSecondary
+                                        color = if (isPhotoAttached) EmeraldPrimary else TextSecondary
                                     )
                                 )
                             }
@@ -516,10 +516,10 @@ fun OrderDetailsScreen(
                                 onClick = { isPhotoAttached = !isPhotoAttached },
                                 shape = RoundedCornerShape(10.dp),
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (isPhotoAttached) EmeraldPrimary else DarkSurfaceElevated,
-                                    contentColor = if (isPhotoAttached) Color(0xFF020617) else TextPrimary
+                                    containerColor = if (isPhotoAttached) EmeraldPrimary else Color(0xFFF1F5F9),
+                                    contentColor = if (isPhotoAttached) Color.White else TextPrimary
                                 ),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder)
+                                border = androidx.compose.foundation.BorderStroke(1.dp, LightBorder)
                             ) {
                                 Icon(imageVector = Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
@@ -536,10 +536,10 @@ fun OrderDetailsScreen(
                         placeholder = { Text("e.g. Handed to security / Received by customer") },
                         shape = RoundedCornerShape(12.dp),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = DarkSurface,
-                            unfocusedContainerColor = DarkSurface,
+                            focusedContainerColor = Color.White,
+                            unfocusedContainerColor = Color.White,
                             focusedBorderColor = EmeraldPrimary,
-                            unfocusedBorderColor = DarkBorder,
+                            unfocusedBorderColor = LightBorder,
                             focusedTextColor = TextPrimary,
                             unfocusedTextColor = TextPrimary
                         ),
