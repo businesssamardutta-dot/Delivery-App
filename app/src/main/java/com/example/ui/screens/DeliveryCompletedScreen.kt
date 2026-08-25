@@ -29,7 +29,7 @@ fun DeliveryCompletedScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(HaribanshoBackground)
+            .background(DarkBg)
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
@@ -37,15 +37,15 @@ fun DeliveryCompletedScreen(
         // Large Green Checkmark Circle
         Surface(
             shape = CircleShape,
-            color = HaribanshoSuccess,
-            shadowElevation = 6.dp,
+            color = EmeraldPrimary,
+            shadowElevation = 8.dp,
             modifier = Modifier.size(96.dp)
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(
                     imageVector = Icons.Default.Check,
                     contentDescription = "Success",
-                    tint = Color.White,
+                    tint = Color(0xFF020617),
                     modifier = Modifier.size(56.dp)
                 )
             }
@@ -54,17 +54,17 @@ fun DeliveryCompletedScreen(
         Spacer(modifier = Modifier.height(20.dp))
 
         Text(
-            text = "Great Job!",
+            text = "Trip Completed!",
             style = MaterialTheme.typography.headlineMedium.copy(
                 fontWeight = FontWeight.ExtraBold,
-                color = HaribanshoTextPrimary
+                color = TextPrimary
             )
         )
 
         Text(
-            text = "Order Delivered Successfully",
+            text = "Order Delivered & Settled Successfully",
             style = MaterialTheme.typography.bodyLarge.copy(
-                color = HaribanshoSuccess,
+                color = EmeraldLight,
                 fontWeight = FontWeight.Bold
             )
         )
@@ -73,9 +73,9 @@ fun DeliveryCompletedScreen(
 
         // Order Summary Card
         Card(
-            colors = CardDefaults.cardColors(containerColor = Color.White),
+            colors = CardDefaults.cardColors(containerColor = DarkSurface),
             shape = RoundedCornerShape(20.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(
@@ -86,42 +86,47 @@ fun DeliveryCompletedScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text("Order ID", color = HaribanshoTextSecondary, fontSize = 14.sp)
-                    Text(order.order_number, fontWeight = FontWeight.Bold, color = HaribanshoPrimary, fontSize = 14.sp)
+                    Text("Order Number", color = TextSecondary, fontSize = 14.sp)
+                    Text(order.order_number, fontWeight = FontWeight.Bold, color = EmeraldLight, fontSize = 14.sp)
                 }
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text("Customer", color = HaribanshoTextSecondary, fontSize = 14.sp)
-                    Text(order.customer_name, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text("Customer", color = TextSecondary, fontSize = 14.sp)
+                    Text(order.customer_name, fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
                 }
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text("Order Amount", color = HaribanshoTextSecondary, fontSize = 14.sp)
-                    Text("₹${String.format("%.2f", order.total_amount)}", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text("Order Total", color = TextSecondary, fontSize = 14.sp)
+                    Text("₹${String.format("%.2f", order.total_amount)}", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 14.sp)
                 }
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text("Payment Mode", color = HaribanshoTextSecondary, fontSize = 14.sp)
-                    Text(if (order.payment_mode == "COD") "Cash on Delivery" else "Prepaid Online", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text("Payment Mode", color = TextSecondary, fontSize = 14.sp)
+                    Text(
+                        if (order.payment_method == "COD") "Cash on Delivery" else "Prepaid Online",
+                        fontWeight = FontWeight.Bold,
+                        color = if (order.payment_method == "COD") AmberAlert else EmeraldLight,
+                        fontSize = 14.sp
+                    )
                 }
 
-                if (order.payment_mode == "COD") {
-                    Divider(color = Color(0xFFF3F4F6))
+                if (order.payment_method == "COD" && collectedAmount > 0) {
+                    Divider(color = DarkBorder)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Collected Amount", fontWeight = FontWeight.Bold, color = HaribanshoTextPrimary, fontSize = 15.sp)
-                        Text("₹${String.format("%.2f", collectedAmount)}", fontWeight = FontWeight.ExtraBold, color = HaribanshoSuccess, fontSize = 16.sp)
+                        Text("COD Cash in Hand", fontWeight = FontWeight.Bold, color = TextPrimary, fontSize = 15.sp)
+                        Text("₹${String.format("%.2f", collectedAmount)}", fontWeight = FontWeight.ExtraBold, color = AmberAlert, fontSize = 16.sp)
                     }
                 }
             }
@@ -137,23 +142,28 @@ fun DeliveryCompletedScreen(
             Button(
                 onClick = onBackToHome,
                 shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = HaribanshoPrimary),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = EmeraldPrimary,
+                    contentColor = Color(0xFF020617)
+                ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(50.dp)
+                    .height(52.dp)
                     .testTag("back_to_home_button")
             ) {
-                Text("Back to Home Dashboard", fontWeight = FontWeight.Bold)
+                Text("Back to Dashboard", fontWeight = FontWeight.ExtraBold, fontSize = 16.sp)
             }
 
             OutlinedButton(
                 onClick = onViewOrders,
                 shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(50.dp)
+                    .height(52.dp)
             ) {
-                Text("View Orders List", fontWeight = FontWeight.Bold, color = HaribanshoPrimary)
+                Text("View All Orders", fontWeight = FontWeight.Bold)
             }
         }
     }

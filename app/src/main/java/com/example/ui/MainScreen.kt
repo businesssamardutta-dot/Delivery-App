@@ -1,6 +1,6 @@
 package com.example.ui
 
-import android.graphics.Bitmap
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -20,55 +20,73 @@ import com.example.data.models.Order
 import com.example.data.remote.SupabaseService
 import com.example.ui.screens.*
 import com.example.ui.theme.*
+import com.example.ui.utils.SoundAlertManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 sealed class Screen(val route: String, val title: String, val icon: ImageVector, val selectedIcon: ImageVector) {
-    object Home : Screen("home", "Home", Icons.Outlined.Home, Icons.Filled.Home)
+    object Home : Screen("home", "Dashboard", Icons.Outlined.Home, Icons.Filled.Home)
     object Orders : Screen("orders", "Orders", Icons.Outlined.ListAlt, Icons.Filled.ListAlt)
-    object Profile : Screen("profile", "Profile", Icons.Outlined.Person, Icons.Filled.Person)
+    object Profile : Screen("profile", "Profile & COD", Icons.Outlined.Person, Icons.Filled.Person)
 }
 
 @Composable
 fun MainScreen(supabaseService: SupabaseService) {
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+
     val isAuthenticated by supabaseService.isAuthenticated.collectAsStateWithLifecycle()
     val deliveryBoy by supabaseService.currentDeliveryBoy.collectAsStateWithLifecycle()
     val orders by supabaseService.orders.collectAsStateWithLifecycle()
+    val codSettlements by supabaseService.codSettlements.collectAsStateWithLifecycle()
     val notifications by supabaseService.notifications.collectAsStateWithLifecycle()
-    val supportTickets by supabaseService.supportTickets.collectAsStateWithLifecycle()
+    val isSyncing by supabaseService.isSyncing.collectAsStateWithLifecycle()
 
     var currentTab by remember { mutableStateOf<Screen>(Screen.Home) }
     var selectedOrderForDetails by remember { mutableStateOf<Order?>(null) }
     var selectedOrderForNav by remember { mutableStateOf<Order?>(null) }
-    var selectedOrderForCompletion by remember { mutableStateOf<Order?>(null) }
     var completedOrderSummary by remember { mutableStateOf<Pair<Order, Double>?>(null) }
     var showNotificationsScreen by remember { mutableStateOf(false) }
 
     var loginLoading by remember { mutableStateOf(false) }
     var loginError by remember { mutableStateOf<String?>(null) }
 
+    // Register Sound Alert Handler for incoming assignments
+    LaunchedEffect(Unit) {
+        supabaseService.onNewOrderAssigned = {
+            SoundAlertManager.playNewOrderChime(context)
+        }
+    }
+
+    if (isAuthenticated) {
+        LocationTracker(supabaseService = supabaseService)
+    }
+
+    // Live background polling for new orders every 5s when authenticated
     LaunchedEffect(isAuthenticated) {
         if (isAuthenticated) {
+            supabaseService.fetchAssignedOrders()
+            supabaseService.fetchCodSettlements()
             while (isActive) {
+                delay(5000)
                 supabaseService.fetchAssignedOrders()
-                delay(4000)
             }
         }
     }
 
+    // 1. Unauthenticated Login Screen
     if (!isAuthenticated) {
         LoginScreen(
             onLoginSuccess = {},
-            onLoginAttempt = { user, pass ->
+            onLoginAttempt = { identifier, pass ->
                 loginLoading = true
                 loginError = null
                 coroutineScope.launch {
-                    val result = supabaseService.login(user, pass)
+                    val result = supabaseService.login(identifier, pass)
                     loginLoading = false
                     if (result.isFailure) {
-                        loginError = "Invalid credentials. Please try again."
+                        loginError = result.exceptionOrNull()?.message ?: "Login failed. Please check your credentials."
                     }
                 }
             },
@@ -78,7 +96,7 @@ fun MainScreen(supabaseService: SupabaseService) {
         return
     }
 
-    // Modal / Stack Screen Routing
+    // 2. Notifications Modal Screen
     if (showNotificationsScreen) {
         NotificationsScreen(
             notifications = notifications,
@@ -96,6 +114,7 @@ fun MainScreen(supabaseService: SupabaseService) {
         return
     }
 
+    // 3. Delivery Completed Success Celebration Screen
     if (completedOrderSummary != null) {
         val (ord, amt) = completedOrderSummary!!
         DeliveryCompletedScreen(
@@ -113,52 +132,56 @@ fun MainScreen(supabaseService: SupabaseService) {
         return
     }
 
-    if (selectedOrderForCompletion != null) {
-        val ord = selectedOrderForCompletion!!
-        DeliveryCompletionDialogScreen(
-            order = ord,
-            onClose = { selectedOrderForCompletion = null },
-            onSubmitComplete = { orderId, amt, sig, proof ->
-                coroutineScope.launch {
-                    val success = supabaseService.completeDelivery(orderId, amt, null, proof)
-                    if (success) {
-                        completedOrderSummary = ord to amt
-                        selectedOrderForCompletion = null
-                        selectedOrderForNav = null
-                        selectedOrderForDetails = null
-                    }
-                }
-            }
-        )
-        return
-    }
-
+    // 4. Live GPS Navigation HUD Screen
     if (selectedOrderForNav != null) {
         val activeOrd = orders.find { it.id == selectedOrderForNav!!.id } ?: selectedOrderForNav!!
         NavigationScreen(
             order = activeOrd,
             onBack = { selectedOrderForNav = null },
-            onReachedCustomer = { orderId ->
+            onBroadcastGps = { lat, lng ->
                 coroutineScope.launch {
-                    supabaseService.reachCustomer(orderId)
+                    supabaseService.updateGPSLocation(activeOrd.id, lat, lng)
                 }
             },
-            onMarkDelivered = { ordToComplete ->
-                selectedOrderForCompletion = ordToComplete
+            onReachedCustomer = { orderId ->
+                coroutineScope.launch {
+                    supabaseService.startDelivery(orderId)
+                }
+            },
+            onOpenPod = { ord ->
+                selectedOrderForNav = null
+                selectedOrderForDetails = ord
             }
         )
         return
     }
 
+    // 5. Order Details & Execution (with POD & Manifest) Screen
     if (selectedOrderForDetails != null) {
         val currentOrd = orders.find { it.id == selectedOrderForDetails!!.id } ?: selectedOrderForDetails!!
         OrderDetailsScreen(
             order = currentOrd,
             onBack = { selectedOrderForDetails = null },
+            onAcceptOrder = { orderId ->
+                coroutineScope.launch { supabaseService.acceptOrder(orderId) }
+            },
             onStartDelivery = { orderId ->
                 coroutineScope.launch {
                     supabaseService.startDelivery(orderId)
                     selectedOrderForNav = currentOrd
+                }
+            },
+            onCompleteDelivery = { orderId, amount, notes ->
+                coroutineScope.launch {
+                    val success = supabaseService.completeDelivery(
+                        orderId = orderId,
+                        collectedAmount = amount,
+                        driverNotes = notes
+                    )
+                    if (success) {
+                        completedOrderSummary = currentOrd to amount
+                        selectedOrderForDetails = null
+                    }
                 }
             },
             onViewOnMap = { ord ->
@@ -168,13 +191,15 @@ fun MainScreen(supabaseService: SupabaseService) {
         return
     }
 
-    // Main Bottom Nav Scaffold Layout
+    // 6. Main 3-Tab Bottom Navigation Layout
     Scaffold(
         bottomBar = {
             NavigationBar(
                 containerColor = Color.White,
                 tonalElevation = 8.dp,
-                modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)
+                modifier = Modifier
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .background(Color.White)
             ) {
                 val items = listOf(Screen.Home, Screen.Orders, Screen.Profile)
                 items.forEach { screen ->
@@ -196,11 +221,11 @@ fun MainScreen(supabaseService: SupabaseService) {
                             )
                         },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = HaribanshoPrimary,
-                            selectedTextColor = HaribanshoPrimary,
-                            indicatorColor = HaribanshoGreenSurface,
-                            unselectedIconColor = HaribanshoTextSecondary,
-                            unselectedTextColor = HaribanshoTextSecondary
+                            selectedIconColor = EmeraldPrimary,
+                            selectedTextColor = EmeraldPrimary,
+                            indicatorColor = EmeraldSurface,
+                            unselectedIconColor = TextSecondary,
+                            unselectedTextColor = TextSecondary
                         ),
                         modifier = Modifier.testTag("tab_${screen.route}")
                     )
@@ -212,24 +237,50 @@ fun MainScreen(supabaseService: SupabaseService) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .background(LightBg)
         ) {
             when (currentTab) {
                 Screen.Home -> HomeScreen(
                     deliveryBoy = deliveryBoy,
                     orders = orders,
+                    codSettlements = codSettlements,
                     unreadNotificationCount = notifications.count { !it.is_read },
+                    isSyncing = isSyncing,
                     onToggleOnline = { isOnline ->
                         coroutineScope.launch { supabaseService.toggleOnlineStatus(isOnline) }
                     },
                     onOrderClick = { order -> selectedOrderForDetails = order },
+                    onAcceptOrder = { orderId ->
+                        coroutineScope.launch { supabaseService.acceptOrder(orderId) }
+                    },
+                    onStartDelivery = { orderId ->
+                        coroutineScope.launch {
+                            supabaseService.startDelivery(orderId)
+                            val ord = orders.find { it.id == orderId }
+                            if (ord != null) selectedOrderForNav = ord
+                        }
+                    },
                     onNotificationClick = { showNotificationsScreen = true },
-                    onNavigateToOrdersTab = { currentTab = Screen.Orders }
+                    onNavigateToOrdersTab = { currentTab = Screen.Orders },
+                    onRefresh = {
+                        coroutineScope.launch {
+                            supabaseService.fetchAssignedOrders()
+                            supabaseService.fetchCodSettlements()
+                        }
+                    }
                 )
 
                 Screen.Orders -> OrdersScreen(
                     orders = orders,
                     onAcceptOrder = { orderId ->
                         coroutineScope.launch { supabaseService.acceptOrder(orderId) }
+                    },
+                    onStartTrip = { orderId ->
+                        coroutineScope.launch {
+                            supabaseService.startDelivery(orderId)
+                            val ord = orders.find { it.id == orderId }
+                            if (ord != null) selectedOrderForNav = ord
+                        }
                     },
                     onRejectOrder = { orderId, reason ->
                         coroutineScope.launch { supabaseService.rejectOrder(orderId, reason) }
@@ -239,12 +290,17 @@ fun MainScreen(supabaseService: SupabaseService) {
 
                 Screen.Profile -> ProfileScreen(
                     deliveryBoy = deliveryBoy,
-                    supportTickets = supportTickets,
-                    onCreateSupportTicket = { subj, desc, prio ->
-                        coroutineScope.launch { supabaseService.createSupportTicket(subj, desc, prio) }
+                    codSettlements = codSettlements,
+                    onToggleOnline = { isOnline ->
+                        coroutineScope.launch { supabaseService.toggleOnlineStatus(isOnline) }
                     },
                     onLogout = {
                         coroutineScope.launch { supabaseService.logout() }
+                    },
+                    onOpenSupportTicket = {
+                        coroutineScope.launch {
+                            supabaseService.createSupportTicket("Shift Assistance", "Requesting dispatcher contact", "HIGH")
+                        }
                     }
                 )
             }

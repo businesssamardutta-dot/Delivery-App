@@ -1,7 +1,9 @@
 package com.example.ui.screens
 
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
+import java.util.Locale
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -10,9 +12,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.Call
-import androidx.compose.material.icons.outlined.Map
-import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -25,6 +25,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.models.Order
+import com.example.ui.components.DeliveryTimeline
+import com.example.ui.components.PaymentBadge
+import com.example.ui.components.SignatureCanvas
 import com.example.ui.components.StatusBadge
 import com.example.ui.theme.*
 
@@ -33,309 +36,614 @@ import com.example.ui.theme.*
 fun OrderDetailsScreen(
     order: Order,
     onBack: () -> Unit,
+    onAcceptOrder: (String) -> Unit,
     onStartDelivery: (String) -> Unit,
+    onCompleteDelivery: (orderId: String, amount: Double, notes: String?) -> Unit,
     onViewOnMap: (Order) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    var selectedTab by remember { mutableIntStateOf(0) }
+    val detailTabs = listOf("Delivery Details", "Package Manifest", "Proof of Delivery (POD)")
+
+    // POD State
+    var isCodConfirmed by remember { mutableStateOf(false) }
+    var capturedSignature by remember { mutableStateOf<Bitmap?>(null) }
+    var isPhotoAttached by remember { mutableStateOf(false) }
+    var deliveryNotes by remember { mutableStateOf("") }
+    var validationError by remember { mutableStateOf<String?>(null) }
+
+    val isCod = order.payment_method.equals("COD", ignoreCase = true)
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(HaribanshoBackground)
+            .background(DarkBg)
     ) {
-        // Top Bar
+        // Top App Bar
         TopAppBar(
             title = {
-                Text(
-                    text = "Order Details",
-                    style = MaterialTheme.typography.titleLarge.copy(
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
+                Column {
+                    Text(
+                        text = "Order #${order.order_number}",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.ExtraBold,
+                            color = TextPrimary
+                        )
                     )
-                )
+                    Text(
+                        text = "Status: ${order.order_status}",
+                        style = MaterialTheme.typography.bodySmall.copy(color = EmeraldLight)
+                    )
+                }
             },
             navigationIcon = {
                 IconButton(onClick = onBack) {
-                    Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                    Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back", tint = TextPrimary)
                 }
             },
-            colors = TopAppBarDefaults.topAppBarColors(containerColor = HaribanshoPrimary)
+            actions = {
+                IconButton(onClick = { onViewOnMap(order) }) {
+                    Icon(imageVector = Icons.Outlined.Navigation, contentDescription = "Map HUD", tint = EmeraldLight)
+                }
+            },
+            colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkSurface)
         )
 
+        // Segmented Tabs
+        TabRow(
+            selectedTabIndex = selectedTab,
+            containerColor = DarkSurface,
+            contentColor = EmeraldPrimary,
+            divider = { Divider(color = DarkBorder) }
+        ) {
+            detailTabs.forEachIndexed { index, tabTitle ->
+                Tab(
+                    selected = selectedTab == index,
+                    onClick = { selectedTab = index },
+                    text = {
+                        Text(
+                            text = tabTitle,
+                            fontWeight = if (selectedTab == index) FontWeight.Bold else FontWeight.Medium,
+                            fontSize = 12.sp,
+                            maxLines = 1
+                        )
+                    }
+                )
+            }
+        }
+
+        // Tab Contents
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .weight(1f)
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Order Header Card (#ORD1250 & Timestamp)
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color.White),
-                shape = RoundedCornerShape(16.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+            when (selectedTab) {
+                0 -> {
+                    // TAB 1: DELIVERY DETAILS
+                    // 4-Step State Machine Stepper
+                    DeliveryTimeline(currentStatus = order.order_status)
+
+                    // Customer Contact Card
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                        shape = RoundedCornerShape(16.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(
-                            text = order.order_number,
-                            style = MaterialTheme.typography.headlineSmall.copy(
-                                fontWeight = FontWeight.ExtraBold,
-                                color = HaribanshoPrimary
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text(
+                                text = "Customer Information",
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextPrimary
+                                )
                             )
-                        )
-                        StatusBadge(status = order.order_status)
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = EmeraldSurface,
+                                        modifier = Modifier.size(44.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = Icons.Default.Person,
+                                                contentDescription = null,
+                                                tint = EmeraldLight
+                                            )
+                                        }
+                                    }
+
+                                    Column {
+                                        Text(
+                                            text = order.customer_name,
+                                            style = MaterialTheme.typography.titleMedium.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                color = TextPrimary
+                                            )
+                                        )
+                                        Text(
+                                            text = order.customer_phone,
+                                            style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                                        )
+                                    }
+                                }
+
+                                // Quick Action Buttons (Call + WhatsApp)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    // Direct Phone Call
+                                    IconButton(
+                                        onClick = {
+                                            val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${order.customer_phone}"))
+                                            context.startActivity(intent)
+                                        },
+                                        modifier = Modifier
+                                            .size(42.dp)
+                                            .clip(CircleShape)
+                                            .background(DarkSurfaceElevated)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Call,
+                                            contentDescription = "Call",
+                                            tint = EmeraldLight
+                                        )
+                                    }
+
+                                    // WhatsApp Chat Trigger
+                                    IconButton(
+                                        onClick = {
+                                            val rawPhone = order.customer_phone.replace("+", "").replace(" ", "")
+                                            val waUrl = "https://wa.me/$rawPhone?text=Hello%20${order.customer_name},%20I%20am%20your%20Haribansho%20delivery%20partner%20with%20order%20${order.order_number}."
+                                            val waIntent = Intent(Intent.ACTION_VIEW, Uri.parse(waUrl))
+                                            context.startActivity(waIntent)
+                                        },
+                                        modifier = Modifier
+                                            .size(42.dp)
+                                            .clip(CircleShape)
+                                            .background(DarkSurfaceElevated)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Chat,
+                                            contentDescription = "WhatsApp",
+                                            tint = EmeraldPrimary
+                                        )
+                                    }
+                                }
+                            }
+
+                            Divider(color = DarkBorder)
+
+                            // Formatted Address & Maps Trigger
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.Top,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Place,
+                                        contentDescription = null,
+                                        tint = EmeraldPrimary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Text(
+                                        text = order.delivery_address,
+                                        style = MaterialTheme.typography.bodyMedium.copy(color = TextPrimary)
+                                    )
+                                }
+
+                                Button(
+                                    onClick = {
+                                        val osmUrl = "https://www.openstreetmap.org/directions?engine=fossgis_osrm_car&route=22.572645,88.363892;${order.latitude},${order.longitude}"
+                                        val osmIntent = Intent(Intent.ACTION_VIEW, Uri.parse(osmUrl))
+                                        context.startActivity(osmIntent)
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = EmeraldPrimary,
+                                        contentColor = Color(0xFF020617)
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                ) {
+                                    Icon(imageVector = Icons.Default.Map, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Open in OpenStreetMap Navigation ➔", fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)
+                                }
+                            }
+                        }
                     }
 
-                    Divider(color = Color(0xFFF3F4F6))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                    // Payment Summary Card
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                        shape = RoundedCornerShape(16.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Column {
-                            Text("Order Time:", style = MaterialTheme.typography.labelSmall, color = HaribanshoTextSecondary)
-                            Text(
-                                text = order.created_at,
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
-                            )
-                        }
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Payment Summary",
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = TextPrimary
+                                    )
+                                )
+                                PaymentBadge(
+                                    method = order.payment_method,
+                                    isPaid = order.payment_status.equals("Paid", ignoreCase = true)
+                                )
+                            }
 
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text("Distance:", style = MaterialTheme.typography.labelSmall, color = HaribanshoTextSecondary)
-                            Text(
-                                text = "${order.distance_km} km away",
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = HaribanshoPrimary)
-                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = if (isCod) "Cash to Collect from Customer:" else "Bill Amount (Prepaid):",
+                                    style = MaterialTheme.typography.bodyMedium.copy(color = TextSecondary)
+                                )
+                                Text(
+                                    text = "₹${String.format("%.2f", order.total_amount)}",
+                                    style = MaterialTheme.typography.titleLarge.copy(
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = if (isCod) AmberAlert else EmeraldLight
+                                    )
+                                )
+                            }
                         }
                     }
                 }
-            }
 
-            // Customer Details Card
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color.White),
-                shape = RoundedCornerShape(16.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Text(
-                        text = "Customer Details",
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = HaribanshoTextPrimary
-                        )
-                    )
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                1 -> {
+                    // TAB 2: PACKAGE MANIFEST
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                        shape = RoundedCornerShape(16.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = HaribanshoGreenSurface,
-                            modifier = Modifier.size(44.dp)
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(imageVector = Icons.Default.Person, contentDescription = null, tint = HaribanshoPrimary)
+                            Text(
+                                text = "Itemized Order Checklist",
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextPrimary
+                                )
+                            )
+
+                            val manifestItems = order.items
+
+                            if (manifestItems.isEmpty()) {
+                                Text(
+                                    text = "Order manifest with 1 package (₹${String.format(Locale.getDefault(), "%.2f", order.total_amount)})",
+                                    style = MaterialTheme.typography.bodyMedium.copy(color = TextSecondary)
+                                )
+                            } else {
+                                manifestItems.forEachIndexed { idx, item ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = EmeraldSurface,
+                                            modifier = Modifier.size(24.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Text(
+                                                    text = "${idx + 1}",
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = EmeraldLight
+                                                )
+                                            }
+                                        }
+                                        Column {
+                                            Text(
+                                                text = item.product_name,
+                                                style = MaterialTheme.typography.bodyMedium.copy(
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = TextPrimary
+                                                )
+                                            )
+                                            Text(
+                                                text = "Qty: ${item.quantity} × ₹${String.format("%.2f", item.unit_price)}",
+                                                style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                                            )
+                                        }
+                                    }
+
+                                    Text(
+                                        text = "₹${String.format("%.2f", item.total_price)}",
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = TextPrimary
+                                        )
+                                    )
+                                }
+                                if (idx < manifestItems.size - 1) {
+                                    HorizontalDivider(color = LightBorder)
+                                }
                             }
                         }
 
-                        Column {
-                            Text(
-                                text = order.customer_name,
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
-                            )
-                            Text(
-                                text = order.customer_phone,
-                                style = MaterialTheme.typography.bodySmall.copy(color = HaribanshoTextSecondary)
-                            )
-                        }
-                    }
+                        HorizontalDivider(color = LightBorder)
 
-                    Row(
-                        verticalAlignment = Alignment.Top,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.LocationOn,
-                            contentDescription = null,
-                            tint = HaribanshoPrimary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Text(
-                            text = order.delivery_address,
-                            style = MaterialTheme.typography.bodyMedium.copy(color = HaribanshoTextPrimary, fontSize = 14.sp)
-                        )
-                    }
-
-                    // Action buttons: Call Customer & View on Map
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${order.customer_phone}"))
-                                context.startActivity(intent)
-                            },
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(44.dp)
-                                .testTag("call_customer_button")
-                        ) {
-                            Icon(imageVector = Icons.Outlined.Call, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Call Customer", fontSize = 13.sp)
-                        }
-
-                        Button(
-                            onClick = { onViewOnMap(order) },
-                            colors = ButtonDefaults.buttonColors(containerColor = HaribanshoPrimary),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(44.dp)
-                                .testTag("view_on_map_button")
-                        ) {
-                            Icon(imageVector = Icons.Outlined.Map, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("View on Map", fontSize = 13.sp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Total Items: ${manifestItems.sumOf { it.quantity }}",
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextSecondary
+                                )
+                                Text(
+                                    text = "Total: ₹${String.format("%.2f", order.total_amount)}",
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = EmeraldLight
+                                )
+                            }
                         }
                     }
                 }
-            }
 
-            // Order Items Card
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color.White),
-                shape = RoundedCornerShape(16.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text(
-                        text = "Order Items (${order.items.size})",
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = HaribanshoTextPrimary
-                        )
+                2 -> {
+                    // TAB 3: PROOF OF DELIVERY (POD)
+                    if (validationError != null) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = RedSurface,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = validationError!!,
+                                color = RedDanger,
+                                fontSize = 13.sp,
+                                modifier = Modifier.padding(12.dp)
+                            )
+                        }
+                    }
+
+                    // 1. COD Verification Checkbox
+                    if (isCod) {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = AmberSurface),
+                            shape = RoundedCornerShape(16.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.5.dp, AmberAlert),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Checkbox(
+                                    checked = isCodConfirmed,
+                                    onCheckedChange = {
+                                        isCodConfirmed = it
+                                        validationError = null
+                                    },
+                                    colors = CheckboxDefaults.colors(
+                                        checkedColor = AmberAlert,
+                                        checkmarkColor = Color(0xFF020617)
+                                    )
+                                )
+                                Text(
+                                    text = "I have collected ₹${String.format("%.2f", order.total_amount)} in physical cash from customer.",
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = TextPrimary
+                                    )
+                                )
+                            }
+                        }
+                    }
+
+                    // 2. Digital Signature Pad
+                    SignatureCanvas(
+                        onSignatureCaptured = {
+                            capturedSignature = it
+                            validationError = null
+                        }
                     )
 
-                    order.items.forEachIndexed { index, item ->
+                    // 3. Camera / Doorstep Photo Proof
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                        shape = RoundedCornerShape(16.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = "${index + 1}. ${item.product_name} x${item.quantity}",
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    color = HaribanshoTextPrimary,
-                                    fontSize = 14.sp
+                            Column {
+                                Text(
+                                    text = "Doorstep Photo Proof",
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = TextPrimary
+                                    )
                                 )
-                            )
-                            Text(
-                                text = "₹${String.format("%.2f", item.total_price)}",
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = HaribanshoTextPrimary
+                                Text(
+                                    text = if (isPhotoAttached) "Doorstep Photo Attached ✓" else "Optional photo confirmation",
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = if (isPhotoAttached) EmeraldLight else TextSecondary
+                                    )
                                 )
-                            )
-                        }
-                    }
+                            }
 
-                    Divider(color = Color(0xFFF3F4F6))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Total Order Value",
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                        )
-                        Text(
-                            text = "₹${String.format("%.2f", order.total_amount)}",
-                            style = MaterialTheme.typography.titleLarge.copy(
-                                fontWeight = FontWeight.ExtraBold,
-                                color = HaribanshoPrimary
-                            )
-                        )
-                    }
-                }
-            }
-
-            // Payment Mode Card
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color.White),
-                shape = RoundedCornerShape(16.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text("Payment Mode", style = MaterialTheme.typography.labelMedium, color = HaribanshoTextSecondary)
-                        Text(
-                            text = if (order.payment_mode == "COD") "Cash on Delivery (COD)" else "Prepaid Online Payment",
-                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold, color = HaribanshoTextPrimary)
-                        )
-                    }
-
-                    if (order.payment_mode == "COD") {
-                        Surface(shape = RoundedCornerShape(8.dp), color = HaribanshoWarning.copy(alpha = 0.15f)) {
-                            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), horizontalAlignment = Alignment.End) {
-                                Text("Amount to Collect", fontSize = 11.sp, color = Color(0xFFB45309))
-                                Text("₹${String.format("%.0f", order.total_amount)}", fontWeight = FontWeight.ExtraBold, color = Color(0xFFB45309))
+                            Button(
+                                onClick = { isPhotoAttached = !isPhotoAttached },
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isPhotoAttached) EmeraldPrimary else DarkSurfaceElevated,
+                                    contentColor = if (isPhotoAttached) Color(0xFF020617) else TextPrimary
+                                ),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder)
+                            ) {
+                                Icon(imageVector = Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(if (isPhotoAttached) "Attached" else "Capture")
                             }
                         }
                     }
+
+                    // 4. Delivery Notes
+                    OutlinedTextField(
+                        value = deliveryNotes,
+                        onValueChange = { deliveryNotes = it },
+                        label = { Text("Driver Delivery Notes (Optional)") },
+                        placeholder = { Text("e.g. Handed to security / Received by customer") },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = DarkSurface,
+                            unfocusedContainerColor = DarkSurface,
+                            focusedBorderColor = EmeraldPrimary,
+                            unfocusedBorderColor = DarkBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
+        }
 
-            // Start Delivery Primary Button
-            if (!order.order_status.equals("Delivered", ignoreCase = true) &&
-                !order.order_status.equals("Cancelled", ignoreCase = true)
-            ) {
-                Button(
-                    onClick = { onStartDelivery(order.id) },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = HaribanshoPrimary),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(52.dp)
-                        .testTag("start_delivery_button")
-                ) {
-                    Icon(imageVector = Icons.Outlined.PlayArrow, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = if (order.order_status.equals("Accepted", ignoreCase = true)) "Start Delivery" else "Continue Active Delivery",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                    )
+        // Bottom Fixed State-Transition Action Button (Large 52dp Touch Target)
+        Surface(
+            color = DarkSurface,
+            border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Box(modifier = Modifier.padding(16.dp)) {
+                when (order.order_status.lowercase().trim()) {
+                    "assigned", "pending" -> {
+                        Button(
+                            onClick = { onAcceptOrder(order.id) },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = EmeraldPrimary,
+                                contentColor = Color(0xFF020617)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .testTag("accept_order_btn")
+                        ) {
+                            Icon(imageVector = Icons.Default.Check, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Accept Order Assignment", fontWeight = FontWeight.ExtraBold, fontSize = 16.sp)
+                        }
+                    }
+
+                    "accepted" -> {
+                        Button(
+                            onClick = { onStartDelivery(order.id) },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = EmeraldPrimary,
+                                contentColor = Color(0xFF020617)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .testTag("start_trip_btn")
+                        ) {
+                            Icon(imageVector = Icons.Default.DirectionsBike, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Picked Up • Start Delivery Trip", fontWeight = FontWeight.ExtraBold, fontSize = 16.sp)
+                        }
+                    }
+
+                    "out for delivery", "on the way", "started", "reached" -> {
+                        Button(
+                            onClick = {
+                                if (isCod && !isCodConfirmed && selectedTab != 2) {
+                                    selectedTab = 2 // Switch to POD to confirm COD cash
+                                } else if (isCod && !isCodConfirmed) {
+                                    validationError = "Please check the box confirming you collected ₹${String.format(Locale.getDefault(), "%.2f", order.total_amount)} in cash."
+                                } else {
+                                    val amt = if (isCod) order.total_amount else 0.0
+                                    onCompleteDelivery(order.id, amt, deliveryNotes.ifBlank { null })
+                                }
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = EmeraldPrimary,
+                                contentColor = Color(0xFF020617)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .testTag("complete_delivery_btn")
+                        ) {
+                            Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "✓ Mark as Delivered",
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 16.sp
+                            )
+                        }
+                    }
+
+                    "delivered", "completed" -> {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = EmeraldSurface,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null, tint = EmeraldLight)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Order Successfully Delivered & Settled", color = EmeraldLight, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -1,54 +1,34 @@
 package com.example.data.models
 
-import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
 
 @JsonClass(generateAdapter = true)
-data class User(
-    val id: String = "",
-    val email: String? = null,
-    val phone: String? = null,
-    val name: String? = null,
-    val avatar_url: String? = null
-)
-
-@JsonClass(generateAdapter = true)
 data class DeliveryBoy(
-    val id: String = "DB1250",
-    val user_id: String = "user_123",
-    val delivery_boy_id: String = "DB1250",
+    val id: String = "",
+    val user_id: String = "",
+    val full_name: String = "Delivery Partner",
+    val phone: String = "",
+    val app_username: String = "",
+    val employee_code: String = "DB-8062",
+    val vehicle_info: String = "Motorcycle",
+    val license_number: String = "",
+    val zone_name: String = "Central Hub",
+    val availability_status: String = "Available", // 'Available' | 'Busy' | 'Offline'
     val is_online: Boolean = true,
-    val status: String = "ACTIVE",
-    val rating: Double = 4.8,
-    val vehicle_type: String = "Motor Scooter",
-    val vehicle_number: String = "UP-32-AB-1234",
-    val phone: String = "+91 98765 43210",
-    val email: String = "delivery.ravi@haribansho.com",
-    val name: String = "Ravi Kumar",
-    val active_deliveries_count: Int = 1
-)
-
-@JsonClass(generateAdapter = true)
-data class CustomerAddress(
-    val id: String = "",
-    val customer_id: String = "",
-    val full_address: String = "Near City Mall, Hazratganj, Lucknow, UP 226001",
-    val landmark: String = "Near City Mall",
-    val city: String = "Lucknow",
-    val state: String = "UP",
-    val pincode: String = "226001",
-    val latitude: Double = 26.8467,
-    val longitude: Double = 80.9462
-)
-
-@JsonClass(generateAdapter = true)
-data class Customer(
-    val id: String = "",
-    val name: String = "Rahul Sharma",
-    val phone: String = "+91 98765 12345",
-    val email: String = "rahul.sharma@example.com",
-    val address: CustomerAddress = CustomerAddress()
-)
+    val rating: Double = 5.0,
+    val total_deliveries: Int = 0,
+    val current_latitude: Double = 22.5726,
+    val current_longitude: Double = 88.3639,
+    val active_deliveries_count: Int = 0
+) {
+    // Helper accessor for backward-compat
+    val name: String get() = full_name.ifBlank { "Delivery Partner" }
+    val delivery_boy_id: String get() = employee_code.ifBlank { id }
+    val vehicle_type: String get() = vehicle_info.ifBlank { "Motorcycle" }
+    val vehicle_number: String get() = vehicle_info
+    val email: String get() = ""
+    val status: String get() = availability_status
+}
 
 @JsonClass(generateAdapter = true)
 data class OrderItem(
@@ -57,63 +37,64 @@ data class OrderItem(
     val product_name: String = "Item",
     val quantity: Int = 1,
     val unit_price: Double = 0.0,
-    val total_price: Double = 0.0
-)
+    val total_amount: Double = 0.0
+) {
+    val total_price: Double get() = if (total_amount > 0.0) total_amount else unit_price * quantity
+}
 
 @JsonClass(generateAdapter = true)
 data class Order(
-    val id: String = "ORD1250",
-    val order_number: String = "#ORD1250",
-    val customer_id: String = "cust_1",
-    val customer_name: String = "Rahul Sharma",
-    val customer_phone: String = "+91 98765 12345",
-    val delivery_address: String = "Near City Mall, Hazratganj, Lucknow, UP 226001",
-    val latitude: Double = 26.8467,
-    val longitude: Double = 80.9462,
-    val total_amount: Double = 685.00,
-    val order_status: String = "Assigned", // Assigned, Accepted, Picked Up, On The Way, Reached, Delivered, Cancelled
-    val payment_mode: String = "COD", // COD or PREPAID
-    val payment_status: String = "Pending", // Pending or Paid
-    val created_at: String = "10:30 AM | 17 May 2025",
+    val id: String = "",
+    val order_number: String = "",
+    val customer_name: String = "Customer",
+    val customer_phone: String = "+91 98765 00000",
+    val delivery_address_text: String = "Customer Delivery Address",
+    val total_amount: Double = 0.0,
+    val payment_method: String = "COD", // 'COD' | 'Prepaid' | 'UPI'
+    val payment_status: String = "Pending", // 'Pending' | 'Paid' | 'Failed'
+    val order_status: String = "Assigned", // 'Pending' | 'Assigned' | 'Accepted' | 'Out for Delivery' | 'Delivered' | 'Cancelled'
+    val assignment_status: String = "Assigned", // 'Unassigned' | 'Assigned' | 'Accepted' | 'Rejected'
+    val assigned_delivery_boy_id: String? = null,
+    val assigned_delivery_boy_name: String? = null,
+    val created_at: String = "Today",
+    val latitude: Double = 22.5726,
+    val longitude: Double = 88.3639,
     val distance_km: Double = 2.4,
     val items: List<OrderItem> = emptyList(),
     val rejection_reason: String? = null,
-    val delivery_boy_id: String? = "DB1250"
-)
+    val notes: String? = null
+) {
+    val delivery_address: String get() = delivery_address_text.ifBlank { "Delivery Address" }
+    val payment_mode: String get() = payment_method
+    val payment_type: String get() = payment_method
+    val delivery_boy_id: String? get() = assigned_delivery_boy_id
+}
 
 @JsonClass(generateAdapter = true)
 data class DeliveryAssignment(
     val id: String = "",
     val order_id: String = "",
     val delivery_boy_id: String = "",
-    val assignment_status: String = "Assigned", // Assigned, Accepted, Rejected, Completed
-    val assigned_at: String = "",
+    val status: String = "Assigned", // 'Assigned' | 'Accepted' | 'Started' | 'Delivered' | 'Rejected'
+    val assigned_at: String? = null,
     val accepted_at: String? = null,
-    val completed_at: String? = null,
-    val rejection_reason: String? = null
-)
-
-@JsonClass(generateAdapter = true)
-data class DeliveryTracking(
-    val id: String = "",
-    val order_id: String = "",
-    val delivery_boy_id: String = "",
-    val latitude: Double = 26.8467,
-    val longitude: Double = 80.9462,
-    val speed: Double = 25.0,
-    val accuracy: Double = 5.0,
-    val heading: Double = 90.0,
-    val recorded_at: String = ""
-)
+    val delivered_at: String? = null,
+    val signature_url: String? = null,
+    val photo_proof_url: String? = null,
+    val cod_collected_amount: Double = 0.0,
+    val driver_notes: String? = null
+) {
+    val assignment_status: String get() = status
+}
 
 @JsonClass(generateAdapter = true)
 data class CodSettlement(
     val id: String = "",
-    val order_id: String = "",
     val delivery_boy_id: String = "",
-    val amount_required: Double = 0.0,
-    val amount_collected: Double = 0.0,
-    val status: String = "SETTLED",
+    val order_id: String = "",
+    val order_number: String = "",
+    val amount: Double = 0.0,
+    val status: String = "Collected_By_Rider", // 'Collected_By_Rider' | 'Deposited_To_Hub' | 'Verified'
     val collected_at: String = ""
 )
 
@@ -137,23 +118,4 @@ data class SupportTicket(
     val status: String = "OPEN",
     val priority: String = "NORMAL",
     val created_at: String = ""
-)
-
-data class EarningsSummary(
-    val today_earnings: Double = 1250.00,
-    val deliveries_count: Int = 5,
-    val order_earnings: Double = 1000.00,
-    val tips: Double = 150.00,
-    val incentives: Double = 100.00,
-    val adjustments: Double = 0.00,
-    val net_total: Double = 1250.00
-)
-
-data class RecentTransaction(
-    val id: String,
-    val order_number: String,
-    val amount: Double,
-    val status: String,
-    val timestamp: String,
-    val customer_name: String
 )
