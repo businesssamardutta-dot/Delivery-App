@@ -578,11 +578,18 @@ fun HomeScreen(
                         }
 
                         Text(
-                            text = "No Pending Orders",
+                            text = "No New Assigned Orders",
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = TextPrimary,
                                 fontSize = 17.sp
+                            )
+                        )
+                        Text(
+                            text = "You don't have any new delivery assignments right now.",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = TextSecondary,
+                                fontSize = 13.sp
                             )
                         )
                     }

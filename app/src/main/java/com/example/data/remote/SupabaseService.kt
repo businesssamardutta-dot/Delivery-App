@@ -80,20 +80,22 @@ class SupabaseService(private val context: Context) {
     private fun restoreSession() {
         val savedId = prefs.getString("saved_id", null)
         val savedFullName = prefs.getString("saved_full_name", null)
-        val savedEmpCode = prefs.getString("saved_emp_code", "DB-8062") ?: "DB-8062"
-        val savedPhone = prefs.getString("saved_phone", "+91 98765 43210") ?: "+91 98765 43210"
-        val savedVehicle = prefs.getString("saved_vehicle", "Hero Splendor (WB-02-1234)") ?: "Hero Splendor (WB-02-1234)"
-        val savedZone = prefs.getString("saved_zone", "Kolkata Central Hub") ?: "Kolkata Central Hub"
+        val savedEmpCode = prefs.getString("saved_emp_code", null)
+        val savedPhone = prefs.getString("saved_phone", null)
+        val savedUsername = prefs.getString("saved_username", null)
+        val savedVehicle = prefs.getString("saved_vehicle", "Motorcycle") ?: "Motorcycle"
+        val savedZone = prefs.getString("saved_zone", "Central Hub") ?: "Central Hub"
         val savedStatus = prefs.getString("saved_status", "Available") ?: "Available"
-        val savedRating = prefs.getFloat("saved_rating", 4.95f).toDouble()
-        val savedDeliveries = prefs.getInt("saved_deliveries", 18)
+        val savedRating = prefs.getFloat("saved_rating", 5.0f).toDouble()
+        val savedDeliveries = prefs.getInt("saved_deliveries", 0)
 
         if (!savedId.isNullOrBlank() && !savedFullName.isNullOrBlank()) {
             _currentDeliveryBoy.value = DeliveryBoy(
                 id = savedId,
                 full_name = savedFullName,
-                employee_code = savedEmpCode,
-                phone = savedPhone,
+                employee_code = savedEmpCode ?: savedId.take(8),
+                phone = savedPhone ?: "",
+                app_username = savedUsername ?: "",
                 vehicle_info = savedVehicle,
                 zone_name = savedZone,
                 availability_status = savedStatus,
@@ -103,22 +105,9 @@ class SupabaseService(private val context: Context) {
             )
             _isAuthenticated.value = true
         } else {
-            // Default persistent session as Prosun Majhi (DB-8062) across app restarts
-            val defaultBoy = DeliveryBoy(
-                id = "db_8062_prosun",
-                full_name = "Prosun Majhi",
-                employee_code = "DB-8062",
-                phone = "+91 98765 43210",
-                vehicle_info = "Hero Splendor (WB-02-1234)",
-                zone_name = "Kolkata Central Hub",
-                availability_status = "Available",
-                is_online = true,
-                rating = 4.95,
-                total_deliveries = 18
-            )
-            _currentDeliveryBoy.value = defaultBoy
-            _isAuthenticated.value = true
-            saveSession(defaultBoy)
+            // Unauthenticated by default - force user login to ensure strict data scoping
+            _isAuthenticated.value = false
+            _orders.value = emptyList()
         }
     }
 
@@ -128,6 +117,7 @@ class SupabaseService(private val context: Context) {
             .putString("saved_full_name", boy.full_name)
             .putString("saved_emp_code", boy.employee_code)
             .putString("saved_phone", boy.phone)
+            .putString("saved_username", boy.app_username)
             .putString("saved_vehicle", boy.vehicle_info)
             .putString("saved_zone", boy.zone_name)
             .putString("saved_status", boy.availability_status)
@@ -157,7 +147,7 @@ class SupabaseService(private val context: Context) {
                 val array = JSONArray(body)
 
                 if (array.length() == 0) {
-                    return@withContext Result.failure(Exception("No delivery partner found with ID or username: $cleanIdent"))
+                    return@withContext Result.failure(Exception("No delivery partner found matching username or ID: $cleanIdent"))
                 }
 
                 val obj = array.getJSONObject(0)
@@ -167,12 +157,14 @@ class SupabaseService(private val context: Context) {
                     return@withContext Result.failure(Exception("Incorrect password entered. Please try again."))
                 }
 
+                val boyId = obj.optString("id").ifBlank { obj.optString("delivery_boy_id", UUID.randomUUID().toString()) }
+
                 val boy = DeliveryBoy(
-                    id = obj.optString("id"),
-                    full_name = obj.optString("full_name", "Delivery Partner"),
+                    id = boyId,
+                    full_name = obj.optString("full_name", obj.optString("name", "Delivery Partner")),
                     phone = obj.optString("phone", ""),
-                    app_username = obj.optString("app_username", ""),
-                    employee_code = obj.optString("employee_code", obj.optString("id").take(8)),
+                    app_username = obj.optString("app_username", cleanIdent),
+                    employee_code = obj.optString("employee_code", boyId.take(8)),
                     vehicle_info = obj.optString("vehicle_info", "Motorcycle"),
                     license_number = obj.optString("license_number", ""),
                     zone_name = obj.optString("zone_name", "Central Hub"),
@@ -265,57 +257,31 @@ class SupabaseService(private val context: Context) {
         _isSyncing.value = true
         try {
             val boy = _currentDeliveryBoy.value
+            if (!_isAuthenticated.value || boy.id.isBlank()) {
+                _orders.value = emptyList()
+                return@withContext
+            }
+
             val dbUuid = boy.id
             val dbCode = boy.employee_code
+            val dbPhone = boy.phone.replace(" ", "").replace("+", "")
+            val dbUsername = boy.app_username
             val cleanName = boy.full_name.replace(" ", "%20")
-            val cleanPhone = boy.phone.replace(" ", "%20").replace("+", "%2B")
 
             val ordersMap = mutableMapOf<String, Order>()
 
-            // Strategy 1: Fetch directly from 01_orders table matching rider ID, code, or name
+            // Strategy 1: Fetch via 01_delivery_assignments table for assigned orders
             try {
-                val filterClause = if (dbUuid.isNotBlank() && dbCode.isNotBlank()) {
-                    "or=(assigned_delivery_boy_id.eq.$dbUuid,assigned_delivery_boy_id.eq.$dbCode,assigned_delivery_boy_name.ilike.*$dbCode*,assigned_delivery_boy_name.ilike.*$cleanName*)"
-                } else if (dbUuid.isNotBlank()) {
-                    "assigned_delivery_boy_id=eq.$dbUuid"
-                } else {
-                    "assigned_delivery_boy_id=eq.$dbCode"
-                }
+                val assignFilters = mutableListOf<String>()
+                if (dbUuid.isNotBlank()) assignFilters.add("delivery_boy_id.eq.$dbUuid")
+                if (dbCode.isNotBlank() && dbCode != dbUuid) assignFilters.add("delivery_boy_id.eq.$dbCode")
+                if (boy.phone.isNotBlank()) assignFilters.add("delivery_boy_id.eq.${boy.phone.replace(" ", "%20").replace("+", "%2B")}")
+                if (dbUsername.isNotBlank()) assignFilters.add("delivery_boy_id.eq.$dbUsername")
 
-                val req = Request.Builder()
-                    .url("$supabaseUrl/rest/v1/01_orders?$filterClause&order=created_at.desc&select=*,01_order_items(*)")
-                    .addHeader("apikey", supabaseKey)
-                    .addHeader("Authorization", "Bearer $supabaseKey")
-                    .get()
-                    .build()
-
-                client.newCall(req).execute().use { res ->
-                    if (res.isSuccessful) {
-                        val body = res.body?.string() ?: "[]"
-                        val arr = JSONArray(body)
-                        for (i in 0 until arr.length()) {
-                            val obj = arr.getJSONObject(i)
-                            val ord = parseOrderJson(obj)
-                            ordersMap[ord.id] = ord
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w("SupabaseService", "Direct orders fetch warning: ${e.message}")
-            }
-
-            // Strategy 2: Fetch via 01_delivery_assignments table
-            try {
-                val assignFilter = if (dbUuid.isNotBlank() && dbCode.isNotBlank() && dbUuid != dbCode) {
-                    "or=(delivery_boy_id.eq.$dbUuid,delivery_boy_id.eq.$dbCode)"
-                } else if (dbUuid.isNotBlank()) {
-                    "delivery_boy_id=eq.$dbUuid"
-                } else {
-                    "delivery_boy_id=eq.$dbCode"
-                }
+                val assignFilterClause = if (assignFilters.size == 1) assignFilters[0] else "or=(${assignFilters.joinToString(",")})"
 
                 val assignReq = Request.Builder()
-                    .url("$supabaseUrl/rest/v1/01_delivery_assignments?$assignFilter&select=*,order:01_orders(*,01_order_items(*))")
+                    .url("$supabaseUrl/rest/v1/01_delivery_assignments?$assignFilterClause&select=*,order:01_orders(*,01_order_items(*))")
                     .addHeader("apikey", supabaseKey)
                     .addHeader("Authorization", "Bearer $supabaseKey")
                     .get()
@@ -348,32 +314,41 @@ class SupabaseService(private val context: Context) {
                 Log.w("SupabaseService", "Assignments fetch warning: ${e.message}")
             }
 
-            // Strategy 3: If no specifically assigned orders found, fetch all live orders from Supabase 01_orders table
-            if (ordersMap.isEmpty()) {
-                try {
-                    val allOrdersReq = Request.Builder()
-                        .url("$supabaseUrl/rest/v1/01_orders?order=created_at.desc&select=*,01_order_items(*)")
-                        .addHeader("apikey", supabaseKey)
-                        .addHeader("Authorization", "Bearer $supabaseKey")
-                        .get()
-                        .build()
+            // Strategy 2: Fetch directly from 01_orders table matching rider ID, code, phone, or name
+            try {
+                val orderFilters = mutableListOf<String>()
+                if (dbUuid.isNotBlank()) orderFilters.add("assigned_delivery_boy_id.eq.$dbUuid")
+                if (dbCode.isNotBlank() && dbCode != dbUuid) orderFilters.add("assigned_delivery_boy_id.eq.$dbCode")
+                if (boy.phone.isNotBlank()) orderFilters.add("assigned_delivery_boy_id.eq.${boy.phone.replace(" ", "%20").replace("+", "%2B")}")
+                if (dbUsername.isNotBlank()) orderFilters.add("assigned_delivery_boy_id.eq.$dbUsername")
+                if (cleanName.isNotBlank()) orderFilters.add("assigned_delivery_boy_name.ilike.*$cleanName*")
 
-                    client.newCall(allOrdersReq).execute().use { res ->
-                        if (res.isSuccessful) {
-                            val body = res.body?.string() ?: "[]"
-                            val arr = JSONArray(body)
-                            for (i in 0 until arr.length()) {
-                                val obj = arr.getJSONObject(i)
-                                val ord = parseOrderJson(obj)
-                                ordersMap[ord.id] = ord
-                            }
+                val orderFilterClause = if (orderFilters.size == 1) orderFilters[0] else "or=(${orderFilters.joinToString(",")})"
+
+                val req = Request.Builder()
+                    .url("$supabaseUrl/rest/v1/01_orders?$orderFilterClause&order=created_at.desc&select=*,01_order_items(*)")
+                    .addHeader("apikey", supabaseKey)
+                    .addHeader("Authorization", "Bearer $supabaseKey")
+                    .get()
+                    .build()
+
+                client.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val body = res.body?.string() ?: "[]"
+                        val arr = JSONArray(body)
+                        for (i in 0 until arr.length()) {
+                            val obj = arr.getJSONObject(i)
+                            val ord = parseOrderJson(obj)
+                            ordersMap[ord.id] = ord
                         }
                     }
-                } catch (e: Exception) {
-                    Log.w("SupabaseService", "All orders fetch warning: ${e.message}")
                 }
+            } catch (e: Exception) {
+                Log.w("SupabaseService", "Direct orders fetch warning: ${e.message}")
             }
 
+            // STRICT DATA ISOLATION: No Strategy 3 fallback to all orders.
+            // If no assigned orders found for this rider, return empty list.
             val finalOrders = ordersMap.values.sortedByDescending { it.created_at }
 
             // Check if a new assigned order arrived to trigger sound alert
@@ -387,6 +362,7 @@ class SupabaseService(private val context: Context) {
             _orders.value = finalOrders
         } catch (e: Exception) {
             Log.e("SupabaseService", "fetchAssignedOrders error: ${e.message}", e)
+            _orders.value = emptyList()
         } finally {
             _isSyncing.value = false
         }
