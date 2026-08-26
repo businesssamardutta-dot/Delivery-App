@@ -252,7 +252,7 @@ fun LoginScreen(
                             )
                         } else {
                             Text(
-                                text = "Sign In to Shift",
+                                text = "Sign In",
                                 fontWeight = FontWeight.ExtraBold,
                                 fontSize = 16.sp
                             )
@@ -278,52 +278,6 @@ fun LoginScreen(
                             style = MaterialTheme.typography.bodySmall.copy(
                                 color = TextMuted,
                                 fontSize = 12.sp
-                            )
-                        )
-                    }
-
-                    HorizontalDivider(color = DarkBorder, modifier = Modifier.padding(vertical = 4.dp))
-
-                    Text(
-                        text = "Quick Account Select (Test User Isolation):",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = EmeraldLight
-                    )
-
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        FilterChip(
-                            selected = identifier == "prosun" || identifier == "DB-8062",
-                            onClick = {
-                                identifier = "prosun"
-                                password = ""
-                                onLoginAttempt("prosun", "")
-                            },
-                            label = { Text("Prosun Majhi (prosun)", fontSize = 11.sp) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = EmeraldPrimary,
-                                selectedLabelColor = Color.Black,
-                                containerColor = DarkBg,
-                                labelColor = TextSecondary
-                            )
-                        )
-
-                        FilterChip(
-                            selected = identifier == "DB-1002",
-                            onClick = {
-                                identifier = "DB-1002"
-                                password = ""
-                                onLoginAttempt("DB-1002", "")
-                            },
-                            label = { Text("Rider DB-1002", fontSize = 11.sp) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = EmeraldPrimary,
-                                selectedLabelColor = Color.Black,
-                                containerColor = DarkBg,
-                                labelColor = TextSecondary
                             )
                         )
                     }

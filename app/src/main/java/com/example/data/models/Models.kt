@@ -28,6 +28,8 @@ data class DeliveryBoy(
     val vehicle_number: String get() = vehicle_info
     val email: String get() = ""
     val status: String get() = availability_status
+    val normalizedPhoneDigits: String
+        get() = phone.replace(Regex("\\D"), "").takeLast(10)
 }
 
 @JsonClass(generateAdapter = true)
@@ -56,6 +58,7 @@ data class Order(
     val assignment_status: String = "Assigned", // 'Unassigned' | 'Assigned' | 'Accepted' | 'Rejected'
     val assigned_delivery_boy_id: String? = null,
     val assigned_delivery_boy_name: String? = null,
+    val assigned_delivery_boy_phone: String? = null,
     val created_at: String = "Today",
     val latitude: Double = 22.5726,
     val longitude: Double = 88.3639,
@@ -68,6 +71,17 @@ data class Order(
     val payment_mode: String get() = payment_method
     val payment_type: String get() = payment_method
     val delivery_boy_id: String? get() = assigned_delivery_boy_id
+    val assignedDriverPhoneDigits: String
+        get() = (assigned_delivery_boy_phone ?: "").replace(Regex("\\D"), "").takeLast(10)
+
+    fun getDisplayCustomerName(driverName: String = ""): String {
+        val cleanCust = customer_name.trim()
+        val cleanDriver = driverName.trim()
+        if (cleanCust.isNotBlank() && cleanDriver.isNotBlank() && cleanCust.equals(cleanDriver, ignoreCase = true)) {
+            return "Customer"
+        }
+        return customer_name
+    }
 }
 
 @JsonClass(generateAdapter = true)

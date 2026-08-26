@@ -161,6 +161,7 @@ fun MainScreen(supabaseService: SupabaseService) {
         val currentOrd = orders.find { it.id == selectedOrderForDetails!!.id } ?: selectedOrderForDetails!!
         OrderDetailsScreen(
             order = currentOrd,
+            driverName = deliveryBoy.full_name,
             onBack = { selectedOrderForDetails = null },
             onAcceptOrder = { orderId ->
                 coroutineScope.launch { supabaseService.acceptOrder(orderId) }
@@ -272,6 +273,7 @@ fun MainScreen(supabaseService: SupabaseService) {
 
                 Screen.Orders -> OrdersScreen(
                     orders = orders,
+                    driverName = deliveryBoy.full_name,
                     onAcceptOrder = { orderId ->
                         coroutineScope.launch { supabaseService.acceptOrder(orderId) }
                     },

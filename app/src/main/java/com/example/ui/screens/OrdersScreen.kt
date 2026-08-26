@@ -30,7 +30,8 @@ fun OrdersScreen(
     onStartTrip: (String) -> Unit,
     onRejectOrder: (String, String) -> Unit,
     onOrderClick: (Order) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    driverName: String = ""
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var selectedFilter by remember { mutableStateOf("All") }
@@ -215,7 +216,8 @@ fun OrdersScreen(
                         onAccept = { onAcceptOrder(order.id) },
                         onStartTrip = { onStartTrip(order.id) },
                         onReject = { rejectDialogOrder = order },
-                        onClick = { onOrderClick(order) }
+                        onClick = { onOrderClick(order) },
+                        driverName = driverName
                     )
                 }
             }

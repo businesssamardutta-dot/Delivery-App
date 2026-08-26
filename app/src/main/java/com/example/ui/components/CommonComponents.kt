@@ -347,7 +347,8 @@ fun OrderCard(
     onStartTrip: (() -> Unit)? = null,
     onReject: (() -> Unit)? = null,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    driverName: String = ""
 ) {
     Card(
         onClick = onClick,
@@ -401,7 +402,7 @@ fun OrderCard(
                         modifier = Modifier.size(16.dp)
                     )
                     Text(
-                        text = order.customer_name,
+                        text = "Customer: ${order.getDisplayCustomerName(driverName)}",
                         style = MaterialTheme.typography.bodyMedium.copy(
                             fontWeight = FontWeight.Bold,
                             color = TextPrimary

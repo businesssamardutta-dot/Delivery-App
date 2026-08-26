@@ -40,7 +40,8 @@ fun OrderDetailsScreen(
     onStartDelivery: (String) -> Unit,
     onCompleteDelivery: (orderId: String, amount: Double, notes: String?) -> Unit,
     onViewOnMap: (Order) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    driverName: String = ""
 ) {
     val context = LocalContext.current
     var selectedTab by remember { mutableIntStateOf(0) }
@@ -171,7 +172,7 @@ fun OrderDetailsScreen(
 
                                     Column {
                                         Text(
-                                            text = order.customer_name,
+                                            text = order.getDisplayCustomerName(driverName.ifBlank { order.assigned_delivery_boy_name ?: "" }),
                                             style = MaterialTheme.typography.titleMedium.copy(
                                                 fontWeight = FontWeight.Bold,
                                                 color = TextPrimary

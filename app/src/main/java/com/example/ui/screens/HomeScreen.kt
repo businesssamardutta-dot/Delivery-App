@@ -515,16 +515,33 @@ fun HomeScreen(
                         }
 
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(
-                                text = activeOrder.customer_name.uppercase(),
-                                style = MaterialTheme.typography.titleMedium.copy(
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = TextPrimary,
-                                    fontSize = 16.sp
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = Color(0xFFF1F5F9)
+                                ) {
+                                    Text(
+                                        text = "CUSTOMER RECIPIENT",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 10.sp,
+                                        color = TextSecondary,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                                Text(
+                                    text = activeOrder.getDisplayCustomerName(deliveryBoy.full_name),
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = TextPrimary,
+                                        fontSize = 16.sp
+                                    )
                                 )
-                            )
+                            }
                             Text(
-                                text = activeOrder.delivery_address,
+                                text = "Delivery Address: ${activeOrder.delivery_address}",
                                 style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary),
                                 maxLines = 2
                             )
