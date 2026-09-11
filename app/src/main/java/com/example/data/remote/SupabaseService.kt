@@ -268,11 +268,11 @@ class SupabaseService(private val context: Context) {
                 return@withContext
             }
 
-            val ordersMap = mutableMapOf<String, Order>()
+            val rawOrderJsonMap = mutableMapOf<String, JSONObject>()
+            val statusOverrideMap = mutableMapOf<String, String>()
 
             val driverPhoneDigits = boy.normalizedPhoneDigits
 
-            // Step 1 & 2: Targets for querying assignments/orders using Driver ID and Phone
             val searchKeys = listOfNotNull(
                 boy.id.takeIf { it.isNotBlank() },
                 boy.employee_code.takeIf { it.isNotBlank() && it != boy.id },
@@ -281,10 +281,10 @@ class SupabaseService(private val context: Context) {
                 driverPhoneDigits.takeIf { it.isNotBlank() && it.length >= 10 }
             )
 
-            // 1. Fetch from 01_delivery_assignments
+            // 1. Fetch assignments from 01_delivery_assignments
             for (key in searchKeys) {
                 try {
-                    val url = "$supabaseUrl/rest/v1/01_delivery_assignments?delivery_boy_id=eq.$key&select=*,order:01_orders(*,01_order_items(*))"
+                    val url = "$supabaseUrl/rest/v1/01_delivery_assignments?delivery_boy_id=eq.$key&select=*"
                     val req = Request.Builder()
                         .url(url)
                         .addHeader("apikey", supabaseKey)
@@ -298,18 +298,12 @@ class SupabaseService(private val context: Context) {
                             val arr = JSONArray(body)
                             for (i in 0 until arr.length()) {
                                 val assignObj = arr.getJSONObject(i)
-                                val orderObj = assignObj.optJSONObject("order")
+                                val ordId = assignObj.optString("order_id").trim()
                                 val assignStatus = assignObj.optString("status", assignObj.optString("assignment_status", "Assigned"))
-
-                                if (orderObj != null) {
-                                    val ord = parseOrderJson(orderObj, overrideStatus = assignStatus)
-                                    ordersMap[ord.id] = ord
-                                } else {
-                                    val ordId = assignObj.optString("order_id")
-                                    if (ordId.isNotBlank() && !ordersMap.containsKey(ordId)) {
-                                        fetchSingleOrder(ordId, assignStatus)?.let { fetched ->
-                                            ordersMap[fetched.id] = fetched
-                                        }
+                                if (ordId.isNotBlank()) {
+                                    statusOverrideMap[ordId] = assignStatus
+                                    if (!rawOrderJsonMap.containsKey(ordId)) {
+                                        fetchRawOrderJson(ordId)?.let { rawOrderJsonMap[ordId] = it }
                                     }
                                 }
                             }
@@ -320,11 +314,15 @@ class SupabaseService(private val context: Context) {
                 }
             }
 
-            // 2. Fetch directly from 01_orders by assigned_delivery_boy_id or assigned_delivery_boy_phone
+            // 2. Query 01_orders directly by driver identifiers
             for (key in searchKeys) {
                 try {
-                    val queryParam = if (key.length == 10 && key.all { it.isDigit() }) "assigned_delivery_boy_phone=ilike.*$key*" else "assigned_delivery_boy_id=eq.$key"
-                    val url = "$supabaseUrl/rest/v1/01_orders?$queryParam&order=created_at.desc&select=*,01_order_items(*)"
+                    val queryParam = if (key.length == 10 && key.all { it.isDigit() }) {
+                        "assigned_delivery_boy_phone=ilike.*$key*"
+                    } else {
+                        "assigned_delivery_boy_id=eq.$key"
+                    }
+                    val url = "$supabaseUrl/rest/v1/01_orders?$queryParam&order=created_at.desc&select=*"
                     val req = Request.Builder()
                         .url(url)
                         .addHeader("apikey", supabaseKey)
@@ -338,8 +336,10 @@ class SupabaseService(private val context: Context) {
                             val arr = JSONArray(body)
                             for (i in 0 until arr.length()) {
                                 val obj = arr.getJSONObject(i)
-                                val ord = parseOrderJson(obj)
-                                ordersMap[ord.id] = ord
+                                val rawId = obj.optString("id").ifBlank { obj.optString("order_id") }
+                                if (rawId.isNotBlank()) {
+                                    rawOrderJsonMap[rawId] = obj
+                                }
                             }
                         }
                     }
@@ -348,16 +348,40 @@ class SupabaseService(private val context: Context) {
                 }
             }
 
-            // Step 3: Frontend / Client-Side Fail-Safe Filtering
-            val validatedServerOrders = ordersMap.values
+            // 3. Also fetch recent orders to ensure matching across potential column variations
+            try {
+                val url = "$supabaseUrl/rest/v1/01_orders?order=created_at.desc&limit=50&select=*"
+                val req = Request.Builder()
+                    .url(url)
+                    .addHeader("apikey", supabaseKey)
+                    .addHeader("Authorization", "Bearer $supabaseKey")
+                    .get()
+                    .build()
+
+                client.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val body = res.body?.string() ?: "[]"
+                        val arr = JSONArray(body)
+                        for (i in 0 until arr.length()) {
+                            val obj = arr.getJSONObject(i)
+                            val rawId = obj.optString("id").ifBlank { obj.optString("order_id") }
+                            if (rawId.isNotBlank()) {
+                                rawOrderJsonMap[rawId] = obj
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("SupabaseService", "General orders query error: ${e.message}")
+            }
+
+            // 4. Resolve full relational entities for customer_id and delivery_address_id
+            val resolvedOrders = resolveAndBuildOrders(rawOrderJsonMap.values.toList(), statusOverrideMap)
+
+            // 5. Driver Scoping
+            val finalOrders = resolvedOrders
                 .filter { isOrderAssignedToDriver(it, boy) }
                 .sortedByDescending { it.created_at }
-
-            val finalOrders = if (validatedServerOrders.isNotEmpty()) {
-                validatedServerOrders
-            } else {
-                getRiderIsolatedSampleOrders(boy).filter { isOrderAssignedToDriver(it, boy) }
-            }
 
             // Check if a new assigned order arrived to trigger sound alert
             val currentAssignedIds = finalOrders.filter { it.order_status.equals("Assigned", ignoreCase = true) }.map { it.id }.toSet()
@@ -370,7 +394,7 @@ class SupabaseService(private val context: Context) {
             _orders.value = finalOrders
         } catch (e: Exception) {
             Log.e("SupabaseService", "fetchAssignedOrders error: ${e.message}", e)
-            _orders.value = getRiderIsolatedSampleOrders(_currentDeliveryBoy.value).filter { isOrderAssignedToDriver(it, _currentDeliveryBoy.value) }
+            _orders.value = emptyList()
         } finally {
             _isSyncing.value = false
         }
@@ -410,125 +434,8 @@ class SupabaseService(private val context: Context) {
         return false
     }
 
-    private fun getRiderIsolatedSampleOrders(boy: DeliveryBoy): List<Order> {
-        val isProsun = boy.app_username.contains("prosun", ignoreCase = true) ||
-                boy.employee_code.contains("8062", ignoreCase = true) ||
-                boy.full_name.contains("Prosun", ignoreCase = true)
-
-        val isRider2 = boy.employee_code.contains("1002", ignoreCase = true) ||
-                boy.app_username.contains("1002", ignoreCase = true) ||
-                boy.full_name.contains("Rider 2", ignoreCase = true)
-
-        return if (isProsun) {
-            listOf(
-                Order(
-                    id = "ord_1001_prosun",
-                    order_number = "#ORD-1001",
-                    customer_name = "Samar Dutta",
-                    customer_phone = "+91 98765 11111",
-                    delivery_address_text = "Flat 4B, Green Towers, Salt Lake Sector V, Kolkata - 700091",
-                    total_amount = 67.0,
-                    payment_method = "COD",
-                    payment_status = "Pending",
-                    order_status = "Out for Delivery",
-                    created_at = "10 mins ago",
-                    items = listOf(OrderItem("i1", "ord_1001_prosun", "Fresh Haribansho Milk (1L)", 2, 33.5)),
-                    assigned_delivery_boy_id = boy.id,
-                    assigned_delivery_boy_name = boy.full_name,
-                    assigned_delivery_boy_phone = boy.phone
-                ),
-                Order(
-                    id = "ord_1002_prosun",
-                    order_number = "#ORD-1002",
-                    customer_name = "Priya Sharma",
-                    customer_phone = "+91 98765 22222",
-                    delivery_address_text = "12/A Park Street, Chowringhee, Kolkata - 700016",
-                    total_amount = 250.0,
-                    payment_method = "Prepaid",
-                    payment_status = "Paid",
-                    order_status = "Delivered",
-                    created_at = "2 hours ago",
-                    items = listOf(OrderItem("i2", "ord_1002_prosun", "Organic Paneer 500g", 1, 250.0)),
-                    assigned_delivery_boy_id = boy.id,
-                    assigned_delivery_boy_name = boy.full_name,
-                    assigned_delivery_boy_phone = boy.phone
-                ),
-                Order(
-                    id = "ord_1003_prosun",
-                    order_number = "#ORD-1003",
-                    customer_name = "Rahul Roy",
-                    customer_phone = "+91 98765 33333",
-                    delivery_address_text = "45 Ballygunge Circular Rd, Kolkata - 700019",
-                    total_amount = 120.0,
-                    payment_method = "COD",
-                    payment_status = "Pending",
-                    order_status = "Assigned",
-                    created_at = "Just Now",
-                    items = listOf(OrderItem("i3", "ord_1003_prosun", "Haribansho Desi Ghee 200g", 1, 120.0)),
-                    assigned_delivery_boy_id = boy.id,
-                    assigned_delivery_boy_name = boy.full_name,
-                    assigned_delivery_boy_phone = boy.phone
-                )
-            )
-        } else if (isRider2) {
-            listOf(
-                Order(
-                    id = "ord_2001_rider2",
-                    order_number = "#ORD-2001",
-                    customer_name = "Ananya Roy",
-                    customer_phone = "+91 98765 44444",
-                    delivery_address_text = "88 Rashbehari Avenue, Gariahat, Kolkata - 700029",
-                    total_amount = 340.0,
-                    payment_method = "COD",
-                    payment_status = "Pending",
-                    order_status = "Out for Delivery",
-                    created_at = "15 mins ago",
-                    items = listOf(OrderItem("i4", "ord_2001_rider2", "Cow Milk 500ml x4", 4, 85.0)),
-                    assigned_delivery_boy_id = boy.id,
-                    assigned_delivery_boy_name = boy.full_name,
-                    assigned_delivery_boy_phone = boy.phone
-                ),
-                Order(
-                    id = "ord_2002_rider2",
-                    order_number = "#ORD-2002",
-                    customer_name = "Debashis Pal",
-                    customer_phone = "+91 98765 55555",
-                    delivery_address_text = "23 New Town Action Area 1, Kolkata - 700156",
-                    total_amount = 199.0,
-                    payment_method = "Prepaid",
-                    payment_status = "Paid",
-                    order_status = "Assigned",
-                    created_at = "5 mins ago",
-                    items = listOf(OrderItem("i5", "ord_2002_rider2", "Haribansho Butter 500g", 1, 199.0)),
-                    assigned_delivery_boy_id = boy.id,
-                    assigned_delivery_boy_name = boy.full_name,
-                    assigned_delivery_boy_phone = boy.phone
-                )
-            )
-        } else {
-            val riderTag = boy.employee_code.ifBlank { boy.id.take(4).uppercase() }
-            listOf(
-                Order(
-                    id = "ord_${riderTag.lowercase()}_01",
-                    order_number = "#ORD-${riderTag}-01",
-                    customer_name = "Assigned Customer 1",
-                    customer_phone = "+91 98765 00000",
-                    delivery_address_text = "Delivery Point - ${boy.zone_name.ifBlank { "Central Hub" }}",
-                    total_amount = 180.0,
-                    payment_method = "COD",
-                    payment_status = "Pending",
-                    order_status = "Out for Delivery",
-                    created_at = "10 mins ago",
-                    items = listOf(OrderItem("i6", "ord_${riderTag.lowercase()}_01", "Standard Dairy Package", 1, 180.0)),
-                    assigned_delivery_boy_id = boy.id,
-                    assigned_delivery_boy_name = boy.full_name,
-                    assigned_delivery_boy_phone = boy.phone
-                )
-            )
-        }
-    }
-
-    private suspend fun fetchSingleOrder(orderId: String, statusOverride: String? = null): Order? = withContext(Dispatchers.IO) {
+    private suspend fun fetchRawOrderJson(orderId: String): JSONObject? = withContext(Dispatchers.IO) {
+        if (orderId.isBlank()) return@withContext null
         try {
             val req = Request.Builder()
                 .url("$supabaseUrl/rest/v1/01_orders?id=eq.$orderId&select=*")
@@ -541,18 +448,244 @@ class SupabaseService(private val context: Context) {
                 if (res.isSuccessful) {
                     val body = res.body?.string() ?: "[]"
                     val arr = JSONArray(body)
-                    if (arr.length() > 0) {
-                        return@withContext parseOrderJson(arr.getJSONObject(0), statusOverride)
+                    if (arr.length() > 0) return@withContext arr.getJSONObject(0)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("SupabaseService", "fetchRawOrderJson error for $orderId: ${e.message}")
+        }
+        null
+    }
+
+    private suspend fun fetchCustomerById(customerId: String): JSONObject? = withContext(Dispatchers.IO) {
+        if (customerId.isBlank()) return@withContext null
+        val candidates = listOf(
+            "$supabaseUrl/rest/v1/01_customers?id=eq.$customerId&select=*",
+            "$supabaseUrl/rest/v1/01_customers?customer_id=eq.$customerId&select=*",
+            "$supabaseUrl/rest/v1/customers?id=eq.$customerId&select=*"
+        )
+        for (url in candidates) {
+            try {
+                val req = Request.Builder()
+                    .url(url)
+                    .addHeader("apikey", supabaseKey)
+                    .addHeader("Authorization", "Bearer $supabaseKey")
+                    .get()
+                    .build()
+
+                client.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val body = res.body?.string() ?: "[]"
+                        val arr = JSONArray(body)
+                        if (arr.length() > 0) return@withContext arr.getJSONObject(0)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("SupabaseService", "fetchCustomerById error for $customerId: ${e.message}")
+            }
+        }
+        null
+    }
+
+    private suspend fun fetchAddressById(addressId: String, customerId: String? = null): JSONObject? = withContext(Dispatchers.IO) {
+        val candidates = mutableListOf<String>()
+        if (addressId.isNotBlank()) {
+            candidates.add("$supabaseUrl/rest/v1/01_customer_addresses?id=eq.$addressId&select=*")
+            candidates.add("$supabaseUrl/rest/v1/01_customer_addresses?address_id=eq.$addressId&select=*")
+            candidates.add("$supabaseUrl/rest/v1/customer_addresses?id=eq.$addressId&select=*")
+        }
+        if (!customerId.isNullOrBlank()) {
+            candidates.add("$supabaseUrl/rest/v1/01_customer_addresses?customer_id=eq.$customerId&order=created_at.desc&limit=1&select=*")
+            candidates.add("$supabaseUrl/rest/v1/customer_addresses?customer_id=eq.$customerId&order=created_at.desc&limit=1&select=*")
+        }
+        for (url in candidates) {
+            try {
+                val req = Request.Builder()
+                    .url(url)
+                    .addHeader("apikey", supabaseKey)
+                    .addHeader("Authorization", "Bearer $supabaseKey")
+                    .get()
+                    .build()
+
+                client.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val body = res.body?.string() ?: "[]"
+                        val arr = JSONArray(body)
+                        if (arr.length() > 0) return@withContext arr.getJSONObject(0)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("SupabaseService", "fetchAddressById error for $addressId: ${e.message}")
+            }
+        }
+        null
+    }
+
+    private suspend fun fetchOrderItemsForOrder(orderId: String): List<OrderItem> = withContext(Dispatchers.IO) {
+        if (orderId.isBlank()) return@withContext emptyList()
+        val itemsList = mutableListOf<OrderItem>()
+        try {
+            val req = Request.Builder()
+                .url("$supabaseUrl/rest/v1/01_order_items?order_id=eq.$orderId&select=*")
+                .addHeader("apikey", supabaseKey)
+                .addHeader("Authorization", "Bearer $supabaseKey")
+                .get()
+                .build()
+
+            client.newCall(req).execute().use { res ->
+                if (res.isSuccessful) {
+                    val body = res.body?.string() ?: "[]"
+                    val arr = JSONArray(body)
+                    for (j in 0 until arr.length()) {
+                        val itemObj = arr.getJSONObject(j)
+                        itemsList.add(
+                            OrderItem(
+                                id = itemObj.optString("id").ifBlank { UUID.randomUUID().toString() },
+                                order_id = orderId,
+                                product_name = listOf(
+                                    itemObj.optString("product_name"),
+                                    itemObj.optString("item_name"),
+                                    itemObj.optString("name"),
+                                    itemObj.optString("title")
+                                ).firstOrNull { it.isNotBlank() } ?: "Item",
+                                quantity = itemObj.optInt("quantity", itemObj.optInt("qty", 1)),
+                                unit_price = itemObj.optDouble("unit_price", itemObj.optDouble("price", itemObj.optDouble("rate", 0.0))),
+                                total_amount = itemObj.optDouble("total_amount", itemObj.optDouble("total_price", itemObj.optDouble("total", 0.0)))
+                            )
+                        )
                     }
                 }
             }
+        } catch (e: Exception) {
+            Log.w("SupabaseService", "fetchOrderItems error for $orderId: ${e.message}")
+        }
+        itemsList
+    }
+
+    private suspend fun resolveAndBuildOrders(
+        rawOrders: List<JSONObject>,
+        statusOverrideMap: Map<String, String> = emptyMap()
+    ): List<Order> = withContext(Dispatchers.IO) {
+        val resultList = mutableListOf<Order>()
+        val customerCache = mutableMapOf<String, JSONObject>()
+        val addressCache = mutableMapOf<String, JSONObject>()
+
+        // Collect all distinct IDs needed
+        val customerIds = rawOrders.mapNotNull { it.optString("customer_id").trim().takeIf { id -> id.isNotBlank() } }.distinct()
+        val addressIds = rawOrders.mapNotNull { it.optString("delivery_address_id").trim().takeIf { id -> id.isNotBlank() } }.distinct()
+
+        // Batch fetch customers if feasible
+        if (customerIds.isNotEmpty()) {
+            try {
+                val filter = "id=in.(${customerIds.joinToString(",")})"
+                val req = Request.Builder()
+                    .url("$supabaseUrl/rest/v1/01_customers?$filter&select=*")
+                    .addHeader("apikey", supabaseKey)
+                    .addHeader("Authorization", "Bearer $supabaseKey")
+                    .get()
+                    .build()
+                client.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val arr = JSONArray(res.body?.string() ?: "[]")
+                        for (i in 0 until arr.length()) {
+                            val c = arr.getJSONObject(i)
+                            val cId = c.optString("id").trim()
+                            if (cId.isNotBlank()) customerCache[cId] = c
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("SupabaseService", "Batch customer query error: ${e.message}")
+            }
+        }
+
+        // Batch fetch addresses if feasible
+        if (addressIds.isNotEmpty()) {
+            try {
+                val filter = "id=in.(${addressIds.joinToString(",")})"
+                val req = Request.Builder()
+                    .url("$supabaseUrl/rest/v1/01_customer_addresses?$filter&select=*")
+                    .addHeader("apikey", supabaseKey)
+                    .addHeader("Authorization", "Bearer $supabaseKey")
+                    .get()
+                    .build()
+                client.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val arr = JSONArray(res.body?.string() ?: "[]")
+                        for (i in 0 until arr.length()) {
+                            val a = arr.getJSONObject(i)
+                            val aId = a.optString("id").trim()
+                            if (aId.isNotBlank()) addressCache[aId] = a
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("SupabaseService", "Batch address query error: ${e.message}")
+            }
+        }
+
+        for (obj in rawOrders) {
+            val rawId = obj.optString("id").ifBlank { obj.optString("order_id", UUID.randomUUID().toString()) }
+            val custId = obj.optString("customer_id").trim().takeIf { it.isNotBlank() }
+            val addrId = obj.optString("delivery_address_id").trim().takeIf { it.isNotBlank() }
+
+            val customerObj = custId?.let { id -> customerCache[id] ?: fetchCustomerById(id)?.also { customerCache[id] = it } }
+            val addressObj = if (!addrId.isNullOrBlank()) {
+                addressCache[addrId] ?: fetchAddressById(addrId, custId)?.also { addressCache[addrId] = it }
+            } else if (!custId.isNullOrBlank()) {
+                fetchAddressById("", custId)
+            } else null
+
+            val items = fetchOrderItemsForOrder(rawId)
+            val overrideStatus = statusOverrideMap[rawId]
+
+            val order = parseOrderJson(
+                obj = obj,
+                overrideStatus = overrideStatus,
+                customerLookup = customerObj,
+                addressLookup = addressObj,
+                fetchedItems = items
+            )
+            resultList.add(order)
+        }
+
+        resultList
+    }
+
+    suspend fun fetchSingleOrder(orderId: String, statusOverride: String? = null): Order? = withContext(Dispatchers.IO) {
+        try {
+            val rawObj = fetchRawOrderJson(orderId) ?: return@withContext null
+            val custId = rawObj.optString("customer_id").trim().takeIf { it.isNotBlank() }
+            val addrId = rawObj.optString("delivery_address_id").trim().takeIf { it.isNotBlank() }
+
+            val customerObj = custId?.let { fetchCustomerById(it) }
+            val addressObj = if (!addrId.isNullOrBlank()) {
+                fetchAddressById(addrId, custId)
+            } else if (!custId.isNullOrBlank()) {
+                fetchAddressById("", custId)
+            } else null
+            val items = fetchOrderItemsForOrder(orderId)
+
+            return@withContext parseOrderJson(
+                obj = rawObj,
+                overrideStatus = statusOverride,
+                customerLookup = customerObj,
+                addressLookup = addressObj,
+                fetchedItems = items
+            )
         } catch (e: Exception) {
             Log.w("SupabaseService", "fetchSingleOrder error: ${e.message}")
         }
         null
     }
 
-    private fun parseOrderJson(obj: JSONObject, overrideStatus: String? = null): Order {
+    private fun parseOrderJson(
+        obj: JSONObject,
+        overrideStatus: String? = null,
+        customerLookup: JSONObject? = null,
+        addressLookup: JSONObject? = null,
+        fetchedItems: List<OrderItem> = emptyList()
+    ): Order {
         val rawId = obj.optString("id").ifBlank { obj.optString("order_id", UUID.randomUUID().toString()) }
         val orderNumber = listOf(
             obj.optString("order_number"),
@@ -561,36 +694,170 @@ class SupabaseService(private val context: Context) {
             obj.optString("display_order_id")
         ).firstOrNull { it.isNotBlank() } ?: ("#ORD-" + rawId.take(6).uppercase())
 
-        val customerName = listOf(
-            obj.optString("customer_name"),
-            obj.optString("customer_full_name"),
-            obj.optString("customer"),
-            obj.optString("name"),
-            obj.optString("full_name"),
-            obj.optString("recipient_name"),
-            obj.optString("user_name"),
-            obj.optString("buyer_name"),
-            obj.optString("client_name")
-        ).firstOrNull { it.isNotBlank() } ?: "Customer (${orderNumber})"
+        val customerId = obj.optString("customer_id").trim().takeIf { it.isNotBlank() }
+        val deliveryAddressId = obj.optString("delivery_address_id").trim().takeIf { it.isNotBlank() }
 
-        val customerPhone = listOf(
-            obj.optString("customer_phone"),
-            obj.optString("phone"),
-            obj.optString("customer_mobile"),
-            obj.optString("mobile"),
-            obj.optString("contact_number")
-        ).firstOrNull { it.isNotBlank() } ?: "+91 98765 00000"
+        val customerObj = customerLookup
+            ?: obj.optJSONObject("customer")
+            ?: obj.optJSONObject("01_customers")
+            ?: obj.optJSONObject("customer_details")
 
-        val addressText = listOf(
-            obj.optString("delivery_address_text"),
-            obj.optString("delivery_address"),
-            obj.optString("address"),
-            obj.optString("shipping_address"),
-            obj.optString("customer_address"),
-            obj.optString("drop_address"),
-            obj.optString("destination_address"),
-            obj.optString("location")
-        ).firstOrNull { it.isNotBlank() } ?: "Kolkata, West Bengal"
+        val addressObj = addressLookup
+            ?: obj.optJSONObject("delivery_address")
+            ?: obj.optJSONObject("01_customer_addresses")
+            ?: obj.optJSONObject("shipping_address")
+            ?: obj.optJSONObject("address")
+
+        // 1. Resolve Customer Name from 01_customers (first_name + last_name, or name/full_name)
+        var customerName: String? = null
+        if (customerObj != null) {
+            val fName = customerObj.optString("first_name", "").trim()
+            val lName = customerObj.optString("last_name", "").trim()
+            if (fName.isNotBlank() || lName.isNotBlank()) {
+                customerName = "$fName $lName".trim()
+            } else {
+                customerName = listOf(
+                    customerObj.optString("name"),
+                    customerObj.optString("full_name"),
+                    customerObj.optString("customer_name"),
+                    customerObj.optString("display_name"),
+                    customerObj.optString("user_name"),
+                    customerObj.optString("username")
+                ).firstOrNull { it.isNotBlank() && !it.equals("Customer", ignoreCase = true) }
+            }
+        }
+
+        // Fallback to address recipient_name if customer table had no valid name
+        if (customerName.isNullOrBlank() && addressObj != null) {
+            val recipient = listOf(
+                addressObj.optString("recipient_name"),
+                addressObj.optString("customer_name"),
+                addressObj.optString("contact_name"),
+                addressObj.optString("name")
+            ).firstOrNull { it.isNotBlank() && !it.equals("Customer", ignoreCase = true) }
+            if (!recipient.isNullOrBlank()) {
+                customerName = recipient.trim()
+            }
+        }
+
+        // Fallback to fields on order payload if not resolved from relations
+        if (customerName.isNullOrBlank()) {
+            customerName = listOf(
+                obj.optString("customer_name"),
+                obj.optString("customer_full_name"),
+                obj.optString("name"),
+                obj.optString("full_name"),
+                obj.optString("recipient_name"),
+                obj.optString("buyer_name")
+            ).firstOrNull { it.isNotBlank() && !it.equals("Customer", ignoreCase = true) }
+        }
+
+        // 2. Resolve Customer Phone from 01_customers / 01_customer_addresses
+        var customerPhone: String? = null
+        if (customerObj != null) {
+            customerPhone = listOf(
+                customerObj.optString("phone"),
+                customerObj.optString("mobile"),
+                customerObj.optString("phone_number"),
+                customerObj.optString("contact_number"),
+                customerObj.optString("mobile_no"),
+                customerObj.optString("mobile_number")
+            ).firstOrNull { it.isNotBlank() }
+        }
+
+        if (customerPhone.isNullOrBlank() && addressObj != null) {
+            customerPhone = listOf(
+                addressObj.optString("phone"),
+                addressObj.optString("mobile"),
+                addressObj.optString("contact_number"),
+                addressObj.optString("phone_number"),
+                addressObj.optString("recipient_phone")
+            ).firstOrNull { it.isNotBlank() }
+        }
+
+        if (customerPhone.isNullOrBlank()) {
+            customerPhone = listOf(
+                obj.optString("customer_phone"),
+                obj.optString("phone"),
+                obj.optString("mobile"),
+                obj.optString("contact_number"),
+                obj.optString("customer_mobile")
+            ).firstOrNull { it.isNotBlank() }
+        }
+
+        // 3. Resolve Delivery Address from 01_customer_addresses
+        var addressText: String? = null
+        if (addressObj != null) {
+            val flatAddress = listOf(
+                addressObj.optString("address"),
+                addressObj.optString("formatted_address"),
+                addressObj.optString("full_address"),
+                addressObj.optString("street_address")
+            ).firstOrNull { it.isNotBlank() }
+
+            if (flatAddress != null) {
+                addressText = flatAddress
+            } else {
+                val line1 = listOf(
+                    addressObj.optString("address_line_1"),
+                    addressObj.optString("address_line1"),
+                    addressObj.optString("street"),
+                    addressObj.optString("house_flat_no")
+                ).firstOrNull { it.isNotBlank() } ?: ""
+
+                val line2 = listOf(
+                    addressObj.optString("address_line_2"),
+                    addressObj.optString("address_line2"),
+                    addressObj.optString("area"),
+                    addressObj.optString("locality")
+                ).firstOrNull { it.isNotBlank() } ?: ""
+
+                val landmark = addressObj.optString("landmark", "").trim()
+                val city = addressObj.optString("city", "").trim()
+                val state = addressObj.optString("state", "").trim()
+                val pincode = listOf(
+                    addressObj.optString("pincode"),
+                    addressObj.optString("pin_code"),
+                    addressObj.optString("zip_code"),
+                    addressObj.optString("postal_code")
+                ).firstOrNull { it.isNotBlank() } ?: ""
+
+                val parts = listOfNotNull(
+                    line1.takeIf { it.isNotBlank() },
+                    line2.takeIf { it.isNotBlank() },
+                    landmark.takeIf { it.isNotBlank() }?.let { "Landmark: $it" },
+                    city.takeIf { it.isNotBlank() },
+                    state.takeIf { it.isNotBlank() },
+                    pincode.takeIf { it.isNotBlank() }
+                )
+                if (parts.isNotEmpty()) {
+                    addressText = parts.joinToString(", ")
+                }
+            }
+        }
+
+        if (addressText.isNullOrBlank() && customerObj != null) {
+            addressText = listOf(
+                customerObj.optString("address"),
+                customerObj.optString("delivery_address"),
+                customerObj.optString("formatted_address")
+            ).firstOrNull { it.isNotBlank() }
+        }
+
+        if (addressText.isNullOrBlank()) {
+            addressText = listOf(
+                obj.optString("delivery_address_text"),
+                obj.optString("delivery_address"),
+                obj.optString("address"),
+                obj.optString("shipping_address"),
+                obj.optString("customer_address"),
+                obj.optString("drop_address")
+            ).firstOrNull { it.isNotBlank() }
+        }
+
+        val finalCustomerName = if (!customerName.isNullOrBlank()) customerName else "Customer not found"
+        val finalCustomerPhone = if (!customerPhone.isNullOrBlank()) customerPhone else "Phone not found"
+        val finalAddressText = if (!addressText.isNullOrBlank()) addressText else "Address not found"
 
         val totalAmount = obj.optDouble("total_amount", obj.optDouble("amount", obj.optDouble("cod_amount", obj.optDouble("payable_amount", 0.0))))
         val paymentMethod = listOf(
@@ -631,39 +898,44 @@ class SupabaseService(private val context: Context) {
             obj.optString("rider_phone")
         ).firstOrNull { it.isNotBlank() } ?: ""
 
-        // Parse items if available
+        // Use fetched items or parse from json array
         val itemsList = mutableListOf<OrderItem>()
-        val rawItems = obj.optJSONArray("01_order_items") ?: obj.optJSONArray("order_items") ?: obj.optJSONArray("items")
-        if (rawItems != null) {
-            for (j in 0 until rawItems.length()) {
-                val itemObj = rawItems.getJSONObject(j)
-                itemsList.add(
-                    OrderItem(
-                        id = itemObj.optString("id").ifBlank { UUID.randomUUID().toString() },
-                        order_id = rawId,
-                        product_name = listOf(
-                            itemObj.optString("product_name"),
-                            itemObj.optString("item_name"),
-                            itemObj.optString("name"),
-                            itemObj.optString("title")
-                        ).firstOrNull { it.isNotBlank() } ?: "Grocery Item",
-                        quantity = itemObj.optInt("quantity", itemObj.optInt("qty", 1)),
-                        unit_price = itemObj.optDouble("unit_price", itemObj.optDouble("price", itemObj.optDouble("rate", 0.0))),
-                        total_amount = itemObj.optDouble("total_amount", itemObj.optDouble("total_price", itemObj.optDouble("total", 0.0)))
+        if (fetchedItems.isNotEmpty()) {
+            itemsList.addAll(fetchedItems)
+        } else {
+            val rawItems = obj.optJSONArray("01_order_items") ?: obj.optJSONArray("order_items") ?: obj.optJSONArray("items")
+            if (rawItems != null) {
+                for (j in 0 until rawItems.length()) {
+                    val itemObj = rawItems.getJSONObject(j)
+                    itemsList.add(
+                        OrderItem(
+                            id = itemObj.optString("id").ifBlank { UUID.randomUUID().toString() },
+                            order_id = rawId,
+                            product_name = listOf(
+                                itemObj.optString("product_name"),
+                                itemObj.optString("item_name"),
+                                itemObj.optString("name"),
+                                itemObj.optString("title")
+                            ).firstOrNull { it.isNotBlank() } ?: "Item",
+                            quantity = itemObj.optInt("quantity", itemObj.optInt("qty", 1)),
+                            unit_price = itemObj.optDouble("unit_price", itemObj.optDouble("price", itemObj.optDouble("rate", 0.0))),
+                            total_amount = itemObj.optDouble("total_amount", itemObj.optDouble("total_price", itemObj.optDouble("total", 0.0)))
+                        )
                     )
-                )
+                }
             }
         }
 
-        val parsedLat = if (obj.has("latitude")) obj.optDouble("latitude", 22.5833)
+        val parsedLat = if (addressObj != null && addressObj.has("latitude") && addressObj.optDouble("latitude", 0.0) != 0.0) {
+            addressObj.optDouble("latitude")
+        } else if (obj.has("latitude")) obj.optDouble("latitude", 22.5833)
         else if (obj.has("lat")) obj.optDouble("lat", 22.5833)
-        else if (obj.has("drop_lat")) obj.optDouble("drop_lat", 22.5833)
         else 22.5833
 
-        val parsedLng = if (obj.has("longitude")) obj.optDouble("longitude", 88.4633)
+        val parsedLng = if (addressObj != null && addressObj.has("longitude") && addressObj.optDouble("longitude", 0.0) != 0.0) {
+            addressObj.optDouble("longitude")
+        } else if (obj.has("longitude")) obj.optDouble("longitude", 88.4633)
         else if (obj.has("lng")) obj.optDouble("lng", 88.4633)
-        else if (obj.has("lon")) obj.optDouble("lon", 88.4633)
-        else if (obj.has("drop_lng")) obj.optDouble("drop_lng", 88.4633)
         else 88.4633
 
         val parsedDist = obj.optDouble("distance_km", obj.optDouble("distance", 2.2))
@@ -671,9 +943,11 @@ class SupabaseService(private val context: Context) {
         return Order(
             id = rawId,
             order_number = orderNumber,
-            customer_name = customerName,
-            customer_phone = customerPhone,
-            delivery_address_text = addressText,
+            customer_id = customerId,
+            delivery_address_id = deliveryAddressId,
+            customer_name = finalCustomerName,
+            customer_phone = finalCustomerPhone,
+            delivery_address_text = finalAddressText,
             total_amount = totalAmount,
             payment_method = paymentMethod,
             payment_status = paymentStatus,

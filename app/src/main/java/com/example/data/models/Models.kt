@@ -48,9 +48,11 @@ data class OrderItem(
 data class Order(
     val id: String = "",
     val order_number: String = "",
-    val customer_name: String = "Customer",
-    val customer_phone: String = "+91 98765 00000",
-    val delivery_address_text: String = "Customer Delivery Address",
+    val customer_id: String? = null,
+    val delivery_address_id: String? = null,
+    val customer_name: String = "Customer not found",
+    val customer_phone: String = "Phone not found",
+    val delivery_address_text: String = "Address not found",
     val total_amount: Double = 0.0,
     val payment_method: String = "COD", // 'COD' | 'Prepaid' | 'UPI'
     val payment_status: String = "Pending", // 'Pending' | 'Paid' | 'Failed'
@@ -75,11 +77,6 @@ data class Order(
         get() = (assigned_delivery_boy_phone ?: "").replace(Regex("\\D"), "").takeLast(10)
 
     fun getDisplayCustomerName(driverName: String = ""): String {
-        val cleanCust = customer_name.trim()
-        val cleanDriver = driverName.trim()
-        if (cleanCust.isNotBlank() && cleanDriver.isNotBlank() && cleanCust.equals(cleanDriver, ignoreCase = true)) {
-            return "Customer"
-        }
         return customer_name
     }
 }
