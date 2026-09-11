@@ -71,7 +71,8 @@ class SupabaseService(private val context: Context) {
 
     // Callback for new incoming order sound
     var onNewOrderAssigned: (() -> Unit)? = null
-    private var lastKnownOrderIds = setOf<String>()
+    private var isInitialOrderSyncDone = false
+    private val lastKnownOrderIds = mutableSetOf<String>()
 
     init {
         restoreSession()
@@ -224,7 +225,8 @@ class SupabaseService(private val context: Context) {
         _orders.value = emptyList()
         _codSettlements.value = emptyList()
         _currentDeliveryBoy.value = DeliveryBoy()
-        lastKnownOrderIds = emptySet()
+        isInitialOrderSyncDone = false
+        lastKnownOrderIds.clear()
     }
 
     suspend fun toggleOnlineStatus(isOnline: Boolean): Boolean = withContext(Dispatchers.IO) {
@@ -385,11 +387,15 @@ class SupabaseService(private val context: Context) {
 
             // Check if a new assigned order arrived to trigger sound alert
             val currentAssignedIds = finalOrders.filter { it.order_status.equals("Assigned", ignoreCase = true) }.map { it.id }.toSet()
-            val hasNewArrival = currentAssignedIds.any { !lastKnownOrderIds.contains(it) }
-            if (hasNewArrival && lastKnownOrderIds.isNotEmpty()) {
-                onNewOrderAssigned?.invoke()
+            if (isInitialOrderSyncDone) {
+                val newlyAssigned = currentAssignedIds.filter { !lastKnownOrderIds.contains(it) }
+                if (newlyAssigned.isNotEmpty()) {
+                    onNewOrderAssigned?.invoke()
+                }
+            } else {
+                isInitialOrderSyncDone = true
             }
-            lastKnownOrderIds = finalOrders.map { it.id }.toSet()
+            lastKnownOrderIds.addAll(finalOrders.map { it.id })
 
             _orders.value = finalOrders
         } catch (e: Exception) {
@@ -679,6 +685,36 @@ class SupabaseService(private val context: Context) {
         null
     }
 
+    private fun JSONObject?.getCleanString(vararg keys: String): String? {
+        if (this == null) return null
+        for (key in keys) {
+            if (!has(key) || isNull(key)) continue
+            val v = optString(key, "").trim()
+            if (v.isNotBlank() &&
+                !v.equals("null", ignoreCase = true) &&
+                !v.equals("undefined", ignoreCase = true) &&
+                !v.equals("n/a", ignoreCase = true)
+            ) {
+                return v
+            }
+        }
+        return null
+    }
+
+    private fun sanitizeAddressString(raw: String?): String {
+        if (raw.isNullOrBlank() || raw.equals("null", ignoreCase = true) || raw.equals("undefined", ignoreCase = true)) {
+            return "Address not found"
+        }
+        var clean = raw
+        clean = clean.replace(Regex("(?i)\\bLandmark:\\s*null\\b,?\\s*"), "")
+        clean = clean.replace(Regex("(?i)\\bnull\\b,?\\s*"), "")
+        clean = clean.replace(Regex("(?i),?\\s*\\bnull\\b"), "")
+        clean = clean.replace(Regex("(?i)\\bundefined\\b,?\\s*"), "")
+        clean = clean.replace(Regex(",\\s*,+"), ", ")
+        clean = clean.trim().removePrefix(",").removeSuffix(",").trim()
+        return if (clean.isBlank()) "Address not found" else clean
+    }
+
     private fun parseOrderJson(
         obj: JSONObject,
         overrideStatus: String? = null,
@@ -686,16 +722,12 @@ class SupabaseService(private val context: Context) {
         addressLookup: JSONObject? = null,
         fetchedItems: List<OrderItem> = emptyList()
     ): Order {
-        val rawId = obj.optString("id").ifBlank { obj.optString("order_id", UUID.randomUUID().toString()) }
-        val orderNumber = listOf(
-            obj.optString("order_number"),
-            obj.optString("order_no"),
-            obj.optString("invoice_no"),
-            obj.optString("display_order_id")
-        ).firstOrNull { it.isNotBlank() } ?: ("#ORD-" + rawId.take(6).uppercase())
+        val rawId = obj.getCleanString("id") ?: obj.getCleanString("order_id") ?: UUID.randomUUID().toString()
+        val orderNumber = obj.getCleanString("order_number", "order_no", "invoice_no", "display_order_id")
+            ?: ("#ORD-" + rawId.take(6).uppercase())
 
-        val customerId = obj.optString("customer_id").trim().takeIf { it.isNotBlank() }
-        val deliveryAddressId = obj.optString("delivery_address_id").trim().takeIf { it.isNotBlank() }
+        val customerId = obj.getCleanString("customer_id")
+        val deliveryAddressId = obj.getCleanString("delivery_address_id")
 
         val customerObj = customerLookup
             ?: obj.optJSONObject("customer")
@@ -711,125 +743,111 @@ class SupabaseService(private val context: Context) {
         // 1. Resolve Customer Name from 01_customers (first_name + last_name, or name/full_name)
         var customerName: String? = null
         if (customerObj != null) {
-            val fName = customerObj.optString("first_name", "").trim()
-            val lName = customerObj.optString("last_name", "").trim()
+            val fName = customerObj.getCleanString("first_name") ?: ""
+            val lName = customerObj.getCleanString("last_name") ?: ""
             if (fName.isNotBlank() || lName.isNotBlank()) {
                 customerName = "$fName $lName".trim()
             } else {
-                customerName = listOf(
-                    customerObj.optString("name"),
-                    customerObj.optString("full_name"),
-                    customerObj.optString("customer_name"),
-                    customerObj.optString("display_name"),
-                    customerObj.optString("user_name"),
-                    customerObj.optString("username")
-                ).firstOrNull { it.isNotBlank() && !it.equals("Customer", ignoreCase = true) }
+                customerName = customerObj.getCleanString(
+                    "name",
+                    "full_name",
+                    "customer_name",
+                    "display_name",
+                    "user_name",
+                    "username"
+                )
             }
         }
 
         // Fallback to address recipient_name if customer table had no valid name
-        if (customerName.isNullOrBlank() && addressObj != null) {
-            val recipient = listOf(
-                addressObj.optString("recipient_name"),
-                addressObj.optString("customer_name"),
-                addressObj.optString("contact_name"),
-                addressObj.optString("name")
-            ).firstOrNull { it.isNotBlank() && !it.equals("Customer", ignoreCase = true) }
-            if (!recipient.isNullOrBlank()) {
-                customerName = recipient.trim()
+        if ((customerName.isNullOrBlank() || customerName.equals("Customer", ignoreCase = true)) && addressObj != null) {
+            val recipient = addressObj.getCleanString(
+                "recipient_name",
+                "customer_name",
+                "contact_name",
+                "name"
+            )
+            if (!recipient.isNullOrBlank() && !recipient.equals("Customer", ignoreCase = true)) {
+                customerName = recipient
             }
         }
 
         // Fallback to fields on order payload if not resolved from relations
-        if (customerName.isNullOrBlank()) {
-            customerName = listOf(
-                obj.optString("customer_name"),
-                obj.optString("customer_full_name"),
-                obj.optString("name"),
-                obj.optString("full_name"),
-                obj.optString("recipient_name"),
-                obj.optString("buyer_name")
-            ).firstOrNull { it.isNotBlank() && !it.equals("Customer", ignoreCase = true) }
+        if (customerName.isNullOrBlank() || customerName.equals("Customer", ignoreCase = true)) {
+            val fromOrder = obj.getCleanString(
+                "customer_name",
+                "customer_full_name",
+                "name",
+                "full_name",
+                "recipient_name",
+                "buyer_name"
+            )
+            if (!fromOrder.isNullOrBlank() && !fromOrder.equals("Customer", ignoreCase = true)) {
+                customerName = fromOrder
+            }
         }
 
         // 2. Resolve Customer Phone from 01_customers / 01_customer_addresses
         var customerPhone: String? = null
         if (customerObj != null) {
-            customerPhone = listOf(
-                customerObj.optString("phone"),
-                customerObj.optString("mobile"),
-                customerObj.optString("phone_number"),
-                customerObj.optString("contact_number"),
-                customerObj.optString("mobile_no"),
-                customerObj.optString("mobile_number")
-            ).firstOrNull { it.isNotBlank() }
+            customerPhone = customerObj.getCleanString(
+                "phone",
+                "mobile",
+                "phone_number",
+                "contact_number",
+                "mobile_no",
+                "mobile_number"
+            )
         }
 
         if (customerPhone.isNullOrBlank() && addressObj != null) {
-            customerPhone = listOf(
-                addressObj.optString("phone"),
-                addressObj.optString("mobile"),
-                addressObj.optString("contact_number"),
-                addressObj.optString("phone_number"),
-                addressObj.optString("recipient_phone")
-            ).firstOrNull { it.isNotBlank() }
+            customerPhone = addressObj.getCleanString(
+                "phone",
+                "mobile",
+                "contact_number",
+                "phone_number",
+                "recipient_phone"
+            )
         }
 
         if (customerPhone.isNullOrBlank()) {
-            customerPhone = listOf(
-                obj.optString("customer_phone"),
-                obj.optString("phone"),
-                obj.optString("mobile"),
-                obj.optString("contact_number"),
-                obj.optString("customer_mobile")
-            ).firstOrNull { it.isNotBlank() }
+            customerPhone = obj.getCleanString(
+                "customer_phone",
+                "phone",
+                "mobile",
+                "contact_number",
+                "customer_mobile"
+            )
         }
 
         // 3. Resolve Delivery Address from 01_customer_addresses
         var addressText: String? = null
         if (addressObj != null) {
-            val flatAddress = listOf(
-                addressObj.optString("address"),
-                addressObj.optString("formatted_address"),
-                addressObj.optString("full_address"),
-                addressObj.optString("street_address")
-            ).firstOrNull { it.isNotBlank() }
+            val flatAddress = addressObj.getCleanString(
+                "address",
+                "formatted_address",
+                "full_address",
+                "street_address"
+            )
 
             if (flatAddress != null) {
                 addressText = flatAddress
             } else {
-                val line1 = listOf(
-                    addressObj.optString("address_line_1"),
-                    addressObj.optString("address_line1"),
-                    addressObj.optString("street"),
-                    addressObj.optString("house_flat_no")
-                ).firstOrNull { it.isNotBlank() } ?: ""
+                val line1 = addressObj.getCleanString("address_line_1", "address_line1", "street", "house_flat_no")
+                val line2 = addressObj.getCleanString("address_line_2", "address_line2", "area", "locality")
+                val landmark = addressObj.getCleanString("landmark")
+                val city = addressObj.getCleanString("city", "district")
+                val state = addressObj.getCleanString("state", "province")
+                val pincode = addressObj.getCleanString("pincode", "pin_code", "zip_code", "postal_code")
 
-                val line2 = listOf(
-                    addressObj.optString("address_line_2"),
-                    addressObj.optString("address_line2"),
-                    addressObj.optString("area"),
-                    addressObj.optString("locality")
-                ).firstOrNull { it.isNotBlank() } ?: ""
+                val parts = mutableListOf<String>()
+                line1?.let { parts.add(it) }
+                line2?.let { if (!it.equals(line1, ignoreCase = true)) parts.add(it) }
+                landmark?.let { parts.add("Landmark: $it") }
+                city?.let { if (!it.equals(line1, ignoreCase = true) && !it.equals(line2, ignoreCase = true)) parts.add(it) }
+                state?.let { parts.add(it) }
+                pincode?.let { parts.add(it) }
 
-                val landmark = addressObj.optString("landmark", "").trim()
-                val city = addressObj.optString("city", "").trim()
-                val state = addressObj.optString("state", "").trim()
-                val pincode = listOf(
-                    addressObj.optString("pincode"),
-                    addressObj.optString("pin_code"),
-                    addressObj.optString("zip_code"),
-                    addressObj.optString("postal_code")
-                ).firstOrNull { it.isNotBlank() } ?: ""
-
-                val parts = listOfNotNull(
-                    line1.takeIf { it.isNotBlank() },
-                    line2.takeIf { it.isNotBlank() },
-                    landmark.takeIf { it.isNotBlank() }?.let { "Landmark: $it" },
-                    city.takeIf { it.isNotBlank() },
-                    state.takeIf { it.isNotBlank() },
-                    pincode.takeIf { it.isNotBlank() }
-                )
                 if (parts.isNotEmpty()) {
                     addressText = parts.joinToString(", ")
                 }
@@ -837,27 +855,23 @@ class SupabaseService(private val context: Context) {
         }
 
         if (addressText.isNullOrBlank() && customerObj != null) {
-            addressText = listOf(
-                customerObj.optString("address"),
-                customerObj.optString("delivery_address"),
-                customerObj.optString("formatted_address")
-            ).firstOrNull { it.isNotBlank() }
+            addressText = customerObj.getCleanString("address", "delivery_address", "formatted_address")
         }
 
         if (addressText.isNullOrBlank()) {
-            addressText = listOf(
-                obj.optString("delivery_address_text"),
-                obj.optString("delivery_address"),
-                obj.optString("address"),
-                obj.optString("shipping_address"),
-                obj.optString("customer_address"),
-                obj.optString("drop_address")
-            ).firstOrNull { it.isNotBlank() }
+            addressText = obj.getCleanString(
+                "delivery_address_text",
+                "delivery_address",
+                "address",
+                "shipping_address",
+                "customer_address",
+                "drop_address"
+            )
         }
 
-        val finalCustomerName = if (!customerName.isNullOrBlank()) customerName else "Customer not found"
-        val finalCustomerPhone = if (!customerPhone.isNullOrBlank()) customerPhone else "Phone not found"
-        val finalAddressText = if (!addressText.isNullOrBlank()) addressText else "Address not found"
+        val finalCustomerName = customerName?.takeIf { it.isNotBlank() && !it.equals("Customer", ignoreCase = true) } ?: "Customer not found"
+        val finalCustomerPhone = customerPhone?.takeIf { it.isNotBlank() } ?: "Phone not found"
+        val finalAddressText = sanitizeAddressString(addressText)
 
         val totalAmount = obj.optDouble("total_amount", obj.optDouble("amount", obj.optDouble("cod_amount", obj.optDouble("payable_amount", 0.0))))
         val paymentMethod = listOf(

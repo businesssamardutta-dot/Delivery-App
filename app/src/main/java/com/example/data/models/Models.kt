@@ -69,7 +69,17 @@ data class Order(
     val rejection_reason: String? = null,
     val notes: String? = null
 ) {
-    val delivery_address: String get() = delivery_address_text.ifBlank { "Delivery Address" }
+    val delivery_address: String get() {
+        val raw = delivery_address_text
+        if (raw.isBlank() || raw.equals("null", ignoreCase = true)) return "Address not found"
+        val clean = raw.replace(Regex("(?i)\\bLandmark:\\s*null\\b,?\\s*"), "")
+            .replace(Regex("(?i)\\bnull\\b,?\\s*"), "")
+            .replace(Regex("(?i),?\\s*\\bnull\\b"), "")
+            .replace(Regex("(?i)\\bundefined\\b,?\\s*"), "")
+            .replace(Regex(",\\s*,+"), ", ")
+            .trim().removePrefix(",").removeSuffix(",").trim()
+        return if (clean.isBlank()) "Address not found" else clean
+    }
     val payment_mode: String get() = payment_method
     val payment_type: String get() = payment_method
     val delivery_boy_id: String? get() = assigned_delivery_boy_id
