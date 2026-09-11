@@ -21,6 +21,7 @@ jobs:
       with:
         java-version: '21'
         distribution: 'temurin'
+        cache: gradle
 
     - name: Set up Gradle
       uses: gradle/actions/setup-gradle@v4
@@ -44,20 +45,20 @@ jobs:
         fi
 
     - name: Build Debug APK
-      run: gradle :app:assembleDebug
+      run: gradle :app:assembleDebug --no-daemon
 
     - name: Build Release APK
-      run: gradle :app:assembleRelease
+      run: gradle :app:assembleRelease --no-daemon
 
-    - name: Upload Debug APK Artifact
+    - name: Upload Debug APK (Directly Installable on Phone)
       uses: actions/upload-artifact@v4
       with:
         name: app-debug-apk
         path: app/build/outputs/apk/debug/app-debug.apk
 
-    - name: Upload Release APK Artifact
+    - name: Upload Release APK (Production)
       uses: actions/upload-artifact@v4
       with:
         name: app-release-apk
-        path: app/build/outputs/apk/release/app-release.apk
+        path: app/build/outputs/apk/release/app-release*.apk
 
